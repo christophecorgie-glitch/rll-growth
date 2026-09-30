@@ -93,3 +93,30 @@ Règles par mots-clés (appliquées après le mapping par famille) :
   (`_find`, `RNA_USECOLS`, `valcols`) et peut nécessiter un ajustement au premier run avec accès réseau.
 - Aucune donnée personnelle : `dir_civilite`, `adrg_*`, `siteweb`, `observation` du RNA ne sont jamais lus ; le champ libre
   `objet` sert au mapping mais n'est pas exporté dans les feuilles `top_associations_*`.
+
+## Premier run G-001 (2026-09-30) — caveats
+
+Commande : `python3 build.py --workdir raw --out out` (durée du build : 4 s ; seul le tarball npm est téléchargé).
+
+| Source | Statut | Lignes brutes | Lignes IDF |
+|---|---|---|---|
+| insee_pop (data.gouv.fr) | **refusée** — 403 sur CONNECT `www.data.gouv.fr` | – | – |
+| etalab_cog (registry.npmjs.org, 6.0.0) | OK | 37 590 | 1 286 (1 266 communes + 20 arrondissements) |
+| rna (data.gouv.fr) | **refusée** — 403 | – | – |
+| rna_agrege (data.gouv.fr) | **refusée** — 403 | – | – |
+| injep (data.gouv.fr) | **refusée** — 403 | – | – |
+| data_es (data.gouv.fr) | **refusée** — 403 | – | – |
+
+- Les refus viennent de la politique réseau de l'environnement d'exécution (proxy d'egress), pas des producteurs.
+  Aucun contournement ni scraping tenté. Pour débloquer : autoriser au minimum `www.data.gouv.fr`,
+  `static.data.gouv.fr` et `object.files.data.gouv.fr` dans l'environnement, puis relancer.
+- Résultat identique au squelette v0.1 déjà versionné (contenu des 7 feuilles et du CSV inchangé, seul le binaire
+  xlsx diffère par ses métadonnées) : **aucun commit `data(fr-idf)` n'a été fait** pour éviter un diff sans contenu.
+- `score_potentiel_RLL` et les ratios `*_per_1k` sont vides pour les 1 286 lignes : pas de classement par score possible,
+  le `rang` actuel suit la population.
+- Le mapping Waldec → verticals n'a pas pu être confronté aux données réelles (RNA non téléchargé) : les anomalies
+  de correspondance (familles inconnues, `objet_social1` vide, colonnes renommées) restent à mesurer au prochain run.
+- `build.py` écrit `README-sources.md` dans le dossier `--out` : avec `--out out`, il produit un doublon
+  `out/README-sources.md` (non versionné ici) ; avec le `--out` par défaut (dossier du pipeline), il **écrase** ce
+  fichier et efface les sections rédigées à la main (« Contexte d'exécution », celle-ci). À corriger dans une PR dédiée
+  (écrire le README généré à part, ou préserver une section manuelle).
