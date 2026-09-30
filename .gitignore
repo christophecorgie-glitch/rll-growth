@@ -1,0 +1,6 @@
+pipelines/**/raw/
+pipelines/**/work/
+*.tgz
+*.zip
+__pycache__/
+.env
