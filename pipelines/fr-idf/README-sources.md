@@ -28,7 +28,10 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 - Population : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726, telles que republiées par @etalab/decoupage-administratif 6.0.0 (publié le 2026-03-09, version épinglée dans build.py). Cette source remplace l'ancienne source primaire `insee_pop` (fichier INSEE via data.gouv.fr), retirée le 2026-10-01.
 - INJEP licences: year 2023 (latest available in the dataset at build time).
 - INJEP clubs: year 2023 (latest available in the dataset at build time).
-- Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de marché ni une prédiction.
+- RNA (associations) : 1106 rattaché(s) à la commune nouvelle depuis un ancien code INSEE (commune fusionnée, déléguée ou associée) ; 2 non rattaché(s), code absent du COG ou non réparti dans la source (75000, 77900).
+- INJEP (licences + clubs) : 2916 rattaché(s) à la commune nouvelle depuis un ancien code INSEE (commune fusionnée, déléguée ou associée) ; 31118 non rattaché(s), code absent du COG ou non réparti dans la source (NR - Non réparti).
+- Data ES (équipements) : 0 rattaché(s) à la commune nouvelle depuis un ancien code INSEE (commune fusionnée, déléguée ou associée) ; 0 non rattaché(s), code absent du COG ou non réparti dans la source (—).
+- Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de marché ni une prédiction. Biais connus, conservés volontairement (décision 2026-10-01) : les ratios font remonter des micro-communes (ex. Clairefontaine-en-Yvelines, ~850 hab., au 2e rang) ; les arrondissements d'affaires gonflent `assos_per_1k` (Paris 8e : ~170 associations pour 1 000 hab., sièges sociaux domiciliés). Un seuil de population sera appliqué dans la vue « villes suivantes » (G-003).
 - Paris figure en une ligne `commune` (75056) plus 20 lignes `arrondissement` (75101–75120) ; le rang n'est attribué qu'aux communes.
 - RNA : seules les associations `position = A` (actives) avec un code INSEE de commune IDF sont comptées ; le champ `adrs_codeinsee` peut être vide/obsolète pour des associations anciennes (sous-estimation possible). Le fichier Waldec ne couvre pas l'Alsace-Moselle (hors périmètre ici).
 - Mapping objets Waldec → verticals RLL : par famille (3 premiers caractères de `objet_social1`), puis règles par mots-clés (alumni, gaming, wellness). La nomenclature officielle des objets sociaux doit être vérifiée contre le fichier de référence publié avec le RNA ; le mapping reste une convention RLL, discutable pour 005 (information/communication → culture), 015 (éducation → asso), 013 (chasse/pêche → nature) et 027 (tourisme → fun).
@@ -67,6 +70,7 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 | 028 | Sécurité, protection civile | asso |
 | 029 | Armée (anciens combattants, ...) | asso |
 | 032 | Activités religieuses, spirituelles ou philosophiques | asso |
+| 040 | Activités religieuses, spirituelles ou philosophiques (associations cultuelles) | asso |
 | 001 | Activités politiques | other |
 | 002 | Clubs, cercles de réflexion | other |
 | 030 | Domaines divers | other |
@@ -88,4 +92,4 @@ Règles par mots-clés (appliquées après le mapping par famille) :
 
 ## Hôtes requis
 
-`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA Waldec), `data.education.gouv.fr` (exports Data ES), `data-pipeline-open.s3.sbg.io.cloud.ovh.net`, `registry.npmjs.org` (paquet etalab).
+`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA Waldec), `data.education.gouv.fr` (exports Data ES), `registry.npmjs.org` (paquet etalab).
