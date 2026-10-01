@@ -38,6 +38,7 @@ import ssl
 import sys
 import tarfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import zipfile
@@ -408,9 +409,10 @@ def load_rna(workdir: Path) -> pd.DataFrame | None:
             if not name.lower().endswith(".csv"):
                 continue
             with z.open(name) as f:
-                for chunk in pd.read_csv(f, sep=";", dtype=str, encoding="latin-1",
+                # Waldec CSVs: UTF-8 with BOM, every field double-quoted (objet may contain ';').
+                for chunk in pd.read_csv(f, sep=";", dtype=str, encoding="utf-8-sig",
                                          usecols=lambda c: c in RNA_USECOLS,
-                                         chunksize=200_000, quoting=3, on_bad_lines="skip"):
+                                         chunksize=200_000, on_bad_lines="skip"):
                     raw_total += len(chunk)
                     cp = chunk.get("adrs_codepostal", pd.Series(index=chunk.index, dtype=str))
                     ci = chunk.get("adrs_codeinsee", pd.Series(index=chunk.index, dtype=str))
@@ -420,7 +422,8 @@ def load_rna(workdir: Path) -> pd.DataFrame | None:
     df = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=RNA_USECOLS)
     df["code_insee"] = df["adrs_codeinsee"].fillna("").str.strip()
     # fall back on code postal -> code insee is ambiguous; keep only rows with a code insee
-    df = df[df["code_insee"].str.len() == 5].copy()
+    # (an IDF code postal with a non-IDF code INSEE is dropped too)
+    df = df[(df["code_insee"].str.len() == 5) & is_idf_code(df["code_insee"])].copy()
     df["famille_objet"] = df["objet_social1"].fillna("").str.strip().str[:3]
     df["vertical"] = classify_vertical(df["famille_objet"], df["titre"].fillna("") + " " + df["objet"].fillna(""))
     log_source(key, r["url"], "OK", rows_raw=raw_total, rows_kept=len(df),
@@ -432,8 +435,14 @@ def load_rna(workdir: Path) -> pd.DataFrame | None:
 # --------------------------------------------------------------------------- #
 # 2. INJEP licences & clubs
 # --------------------------------------------------------------------------- #
+def _norm(col: str) -> str:
+    """'Code Commune' -> 'code_commune', 'Département' -> 'departement' (BOM, accents, spaces)."""
+    col = unicodedata.normalize("NFKD", str(col).lstrip("\ufeff")).encode("ascii", "ignore").decode()
+    return re.sub(r"[\s\-]+", "_", col.strip().lower())
+
+
 def _find(cols, *cands):
-    low = {c.lower(): c for c in cols}
+    low = {_norm(c): c for c in cols}
     for c in cands:
         for k, orig in low.items():
             if re.fullmatch(c, k):
@@ -447,8 +456,9 @@ def load_injep(workdir: Path):
     if not api:
         return None, None
     j = json.loads(api)
-    lic = pick_resource(j, r"lic", fmt="csv") or pick_resource(j, r"licen")
-    clubs = pick_resource(j, r"club", fmt="csv") or pick_resource(j, r"club")
+    # Match the file name only: every resource URL contains "licences-et-clubs" (dataset slug).
+    lic = pick_resource(j, r"(^|/)lic-data-\d{4}\.csv", fmt="csv")
+    clubs = pick_resource(j, r"(^|/)clubs-data-\d{4}\.csv", fmt="csv")
     per_commune, per_fed = None, None
     frames = {}
     for kind, r in (("licences", lic), ("clubs", clubs)):
@@ -459,10 +469,10 @@ def load_injep(workdir: Path):
             continue
         parts = []
         raw = 0
-        for chunk in pd.read_csv(p, sep=None, engine="python", dtype=str, chunksize=200_000):
+        for chunk in pd.read_csv(p, sep=";", dtype=str, encoding="utf-8-sig", chunksize=200_000):
             raw += len(chunk)
             code = _find(chunk.columns, r"code_commune", r"codgeo", r"insee.*", r"code_insee", r"com_code")
-            dep = _find(chunk.columns, r"dep_code", r"code_dep.*", r"departement_code")
+            dep = _find(chunk.columns, r"dep_code", r"code_dep.*", r"departement_code", r"departement")
             if code is None:
                 break
             m = is_idf_code(chunk[code].fillna("")) if dep is None else chunk[dep].astype(str).isin(IDF_DEPS)
@@ -473,10 +483,13 @@ def load_injep(workdir: Path):
         df = pd.concat(parts, ignore_index=True)
         code = _find(df.columns, r"code_commune", r"codgeo", r"insee.*", r"code_insee", r"com_code")
         fed = _find(df.columns, r"federation", r"fed_libelle", r"fede.*", r"nom_fed.*")
-        fedcode = _find(df.columns, r"fed_code", r"code_fed.*")
-        # value column: the yearly total (e.g. l_2022 / total / clubs / nb_licences)
-        valcols = [c for c in df.columns if re.fullmatch(r"(l|c)_\d{4}|total.*|nb_.*|licences?|clubs?", c.lower())]
-        val = valcols[-1] if valcols else None
+        fedcode = _find(df.columns, r"fed_code", r"code_fed.*", r"code")
+        # value column: clubs file -> "Clubs" (clubs only, EPA excluded); licences file -> "Total"
+        # (all ages, both sexes). Older layouts: l_2022 / c_2022 / nb_*.
+        val = _find(df.columns, r"clubs") if kind == "clubs" else _find(df.columns, r"total")
+        if val is None:
+            valcols = [c for c in df.columns if re.fullmatch(r"(l|c)_\d{4}|total.*|nb_.*|licences?|clubs?", _norm(c))]
+            val = valcols[-1] if valcols else None
         if val is None:
             log_source("injep", r["url"], "FAILED", rows_raw=raw, detail="value column not recognised")
             continue
@@ -516,9 +529,10 @@ def load_data_es(workdir: Path):
     if not p.exists() and not try_fetch("data_es", r["url"], p):
         return None
     parts, raw = [], 0
-    for chunk in pd.read_csv(p, sep=None, engine="python", dtype=str, chunksize=100_000, on_bad_lines="skip"):
+    for chunk in pd.read_csv(p, sep=";", dtype=str, encoding="utf-8-sig", chunksize=100_000, on_bad_lines="skip"):
         raw += len(chunk)
-        code = _find(chunk.columns, r"cominsee", r"com_insee", r"inst_com_code", r"code_insee", r"insee.*")
+        code = _find(chunk.columns, r"cominsee", r"com_insee", r"commune_insee", r"inst_com_code", r"code_insee",
+                     r"insee.*")
         eq = _find(chunk.columns, r"equipementid", r"equ_id", r"id_equipement", r"numero.*equip.*")
         if code is None:
             break
@@ -601,8 +615,10 @@ def build(workdir: Path, outdir: Path):
         tbl["equipements_sportifs"] = np.nan
 
     # zero-fill where the source succeeded (absence = 0), keep NaN where the source failed
-    for col, ok in (("assos_total", rna is not None), ("clubs_sport", inj_commune is not None),
-                    ("licences_sport", inj_commune is not None), ("equipements_sportifs", es is not None)):
+    # (INJEP: per file — the clubs file can fail while the licences file succeeds)
+    inj_cols = set(inj_commune.columns) if inj_commune is not None else set()
+    for col, ok in (("assos_total", rna is not None), ("clubs_sport", "clubs" in inj_cols),
+                    ("licences_sport", "licences" in inj_cols), ("equipements_sportifs", es is not None)):
         if ok:
             tbl[col] = tbl[col].fillna(0)
     if rna is not None:
