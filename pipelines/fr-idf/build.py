@@ -2,7 +2,7 @@
 """
 RLL — Île-de-France : villes x verticals (v0.1)
 ================================================
-Builds RLL-IDF-villes-x-verticals-v0.1.xlsx (+ CSV + README-sources.md) from French
+Builds RLL-IDF-villes-x-verticals-v0.1.xlsx (+ CSV, + the generated part of README-sources.md) from French
 open data only. Scope: IDF départements 75, 77, 78, 91, 92, 93, 94, 95.
 
 Sources (in order of attempt):
@@ -13,6 +13,9 @@ Sources (in order of attempt):
   4. Communes + population — @etalab/decoupage-administratif (npm, Licence Ouverte pour les
      données), which republishes the INSEE COG and the INSEE populations de référence
      (population municipale). The package version is pinned so the millésime is known.
+
+Former INSEE codes (communes fusionnées, déléguées, associées) found in the RNA, INJEP and Data ES
+are replaced by the code of the current commune before aggregation (table from the etalab package).
 
 Every download goes through the environment's HTTPS proxy. Connection cuts, timeouts and
 HTTP 5xx are retried (up to 4 attempts, exponential back-off); 403 / 404 are never retried.
@@ -109,7 +112,11 @@ POP_MILLESIME = ("populations de référence 2023 (INSEE, en vigueur au 1er janv
 # RNA Waldec "objet social" families -> RLL verticals
 # The Waldec code is 6 characters; the first 3 identify the family (thème).
 # Family labels follow the official RNA nomenclature ("Nomenclature des objets
-# sociaux", ministère de l'Intérieur). Keyword rules refine a few families.
+# sociaux", ministère de l'Intérieur), checked on 2026-10-01 against the titles of the RNA file
+# (families 025-029 and 100 have no association; 030-050 were shifted in v0.1). The data.gouv.fr
+# dataset "Répertoire National des Associations - Nomenclature WALDEC" (LO 2.0) points to a host
+# the build environment cannot reach; labels were cross-checked on its republications.
+# Keyword rules refine a few families.
 # --------------------------------------------------------------------------- #
 WALDEC_FAMILY_LABELS = {
     "001": "Activités politiques",
@@ -123,32 +130,28 @@ WALDEC_FAMILY_LABELS = {
     "010": "Préservation du patrimoine",
     "011": "Sports, activités de plein air",
     "013": "Chasse, pêche",
-    "014": "Amicales, groupements affinitaires, groupements d'entraide",
+    "014": "Amicales, groupements affinitaires, groupements d'entraide (hors défense de droits fondamentaux)",
     "015": "Éducation, formation",
     "016": "Recherche",
     "017": "Santé",
     "018": "Services et établissements médico-sociaux",
     "019": "Interventions sociales",
-    "020": "Associations caritatives, humanitaires, aide au développement",
+    "020": "Associations caritatives, humanitaires, aide au développement, développement du bénévolat",
     "021": "Services familiaux, services aux personnes âgées",
     "022": "Conduite d'activités économiques",
     "023": "Représentation, promotion et défense d'intérêts économiques",
     "024": "Environnement, cadre de vie",
-    "025": "Aide à l'emploi, développement local, vie locale",
-    "026": "Logement",
-    "027": "Tourisme",
-    "028": "Sécurité, protection civile",
-    "029": "Armée (anciens combattants, ...)",
-    "030": "Domaines divers",
-    "032": "Activités religieuses, spirituelles ou philosophiques",
-    "034": "Domaines divers (non classé)",
-    "040": "Activités religieuses, spirituelles ou philosophiques (associations cultuelles)",
-    "036": "Aide à l'emploi, développement local (bis)",
-    "038": "Groupements de professionnels (ex. syndicats professionnels)",
-    "050": "Activités politiques (bis)",
-    "100": "Inconnu / non renseigné",
+    "030": "Aide à l'emploi, développement local, promotion de solidarités économiques, vie locale",
+    "032": "Logement",
+    "034": "Tourisme",
+    "036": "Sécurité, protection civile",
+    "038": "Armée (dont préparation militaire, médailles), anciens combattants",
+    "040": "Activités religieuses, spirituelles ou philosophiques",
+    "050": "Domaines divers, domaines de nomenclature SITADELE à reclasser",
 }
 
+# Mapping validated by Christophe on 2026-10-01 (PR #2 review). Codes 025-029 do not exist in
+# the nomenclature; any code absent from this table (000, 008, 012, blank ...) falls in "other".
 WALDEC_FAMILY_TO_VERTICAL = {
     "011": "sport",
     "013": "nature",     # chasse, pêche -> outdoor / nature
@@ -157,15 +160,13 @@ WALDEC_FAMILY_TO_VERTICAL = {
     "010": "culture",    # patrimoine
     "005": "culture",    # information, communication (médias, radios associatives)
     "007": "fun",        # clubs de loisirs, relations (refined by keywords -> gaming)
-    "027": "fun",        # tourisme
+    "034": "fun",        # tourisme
     "017": "wellness",   # santé (refined: bien-être, yoga, méditation...)
     "018": "wellness",   # médico-social
     "021": "family",     # services familiaux, personnes âgées
     "022": "business",
     "023": "business",
-    "025": "business",   # aide à l'emploi, développement local
-    "036": "business",
-    "038": "business",
+    "030": "business",   # aide à l'emploi, développement local
     "014": "asso",       # amicales, groupements affinitaires (refined -> alumni)
     "003": "asso",
     "004": "asso",
@@ -174,17 +175,13 @@ WALDEC_FAMILY_TO_VERTICAL = {
     "016": "asso",
     "019": "asso",
     "020": "asso",
-    "026": "asso",
-    "028": "asso",
-    "029": "asso",
-    "032": "asso",
-    "040": "asso",       # cultuelles — aligned on 032 (decision 2026-10-01)
+    "032": "asso",       # logement
+    "036": "asso",       # sécurité, protection civile
+    "038": "asso",       # armée, anciens combattants
+    "040": "asso",       # activités religieuses, spirituelles ou philosophiques
     "001": "other",
     "002": "other",
-    "030": "other",
-    "034": "other",
-    "050": "other",
-    "100": "other",
+    "050": "other",      # domaines divers
 }
 
 VERTICALS = ["sport", "fun", "culture", "wellness", "family", "business",
@@ -199,7 +196,6 @@ KW_WELLNESS = re.compile(r"bien[- ]?[êe]tre|yoga|m[ée]ditation|sophrologie|rel
 # Helpers
 # --------------------------------------------------------------------------- #
 LOG: list[dict] = []          # one entry per source attempt -> `sources` sheet
-ANCIENS_CODES: dict[str, str] = {}  # former / delegated commune code -> current commune code
 NOTES: list[str] = []         # free-text caveats -> README
 
 
@@ -211,7 +207,7 @@ def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licen
         "producer": meta.get("producer", ""),
         "url": url,
         "licence": licence or meta.get("licence", ""),
-        "download_date": date or TODAY,
+        "download_date": TODAY if date is None else date,
         "status": status,
         "rows_raw": rows_raw,
         "rows_kept_idf": rows_kept,
@@ -303,27 +299,77 @@ def try_fetch(key, url, dest=None):
     return None
 
 
-def remap_codes(df: pd.DataFrame, label: str, valid: set, sum_cols=None) -> pd.DataFrame:
-    """Replace former commune codes by the current one (ANCIENS_CODES). With `sum_cols`, re-aggregate
-    per code_insee. Logs how many rows were re-attached and how many codes stay unknown."""
-    df = df.copy()
-    moved = df["code_insee"].isin(ANCIENS_CODES.keys()) & ~df["code_insee"].isin(valid)
-    w = df.loc[moved, sum_cols].sum().sum() if sum_cols else int(moved.sum())
-    df.loc[moved, "code_insee"] = df.loc[moved, "code_insee"].map(ANCIENS_CODES)
-    unknown = df.loc[~df["code_insee"].isin(valid), "code_insee"]
-    if sum_cols:
-        lost = df.loc[~df["code_insee"].isin(valid), sum_cols].sum().sum()
-        df = df.groupby("code_insee", as_index=False)[sum_cols].sum(min_count=1)
-    else:
-        lost = len(unknown)
-    NOTES.append(f"{label} : {int(w)} rattaché(s) à la commune nouvelle depuis un ancien code INSEE "
-                 f"(commune fusionnée, déléguée ou associée) ; {int(lost)} non rattaché(s), code absent du COG "
-                 f"({', '.join(sorted(unknown.unique())[:10]) or '—'}).")
-    return df
+def _cache_meta_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".source.json")
+
+
+def cache_meta(dest: Path) -> dict | None:
+    """Metadata of a file already in raw/ (origin URL, download date), or None if absent.
+    A file without its .source.json (left by an older build) has an unknown origin."""
+    if not dest.exists():
+        return None
+    try:
+        return json.loads(_cache_meta_path(dest).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"url": "", "downloaded": "", "title": ""}
+
+
+def fetch_cached(key: str, url: str, dest: Path, title: str = "") -> dict | None:
+    """Return metadata of the file actually read: the copy in raw/ when present, otherwise a fresh
+    download of `url` (its origin and date are written next to it, in <dest>.source.json)."""
+    meta = cache_meta(dest)
+    if meta is not None:
+        return {**meta, "cache": True}
+    if not try_fetch(key, url, dest):
+        return None
+    meta = {"url": url, "downloaded": TODAY, "title": title}
+    _cache_meta_path(dest).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {**meta, "cache": False}
+
+
+def origin_note(meta: dict) -> str:
+    if not meta.get("cache"):
+        return f"téléchargé pendant ce build ({meta['downloaded']})"
+    if not meta.get("url"):
+        return "cache local raw/ sans métadonnées d'origine (fichier antérieur à ce build)"
+    return f"cache local raw/ (téléchargé le {meta['downloaded']})"
 
 
 def is_idf_code(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str[:2].isin(IDF_DEPS)
+
+
+# Former INSEE codes (communes fusionnées, déléguées, associées, renumérotées) -> current commune.
+# Filled by load_communes() from @etalab/decoupage-administratif, national scope.
+INSEE_REMAP: dict[str, str] = {}
+INSEE_CURRENT: set[str] = set()      # IDF communes actuelles + arrondissements municipaux
+COMMUNE_NAMES: dict[str, str] = {}   # every code in the package (current and former) -> nom
+REMAP_REPORT: list[dict] = []        # per source: orphans before / after -> README + sheet
+REMAP_DETAIL: list[dict] = []        # per source x former code: rows / value reassigned
+
+
+def remap_insee(codes: pd.Series, source: str, weight: pd.Series | None = None) -> pd.Series:
+    """Replace former INSEE codes by the code of the current commune and record the gap
+    (rows whose code is not an IDF commune / arrondissement) before and after."""
+    codes = codes.fillna("").astype(str).str.strip()
+    w = pd.Series(1.0, index=codes.index) if weight is None else pd.to_numeric(weight, errors="coerce").fillna(0)
+    new = codes.map(INSEE_REMAP).fillna(codes)
+    changed = new != codes
+    before = ~codes.isin(INSEE_CURRENT)
+    after = ~new.isin(INSEE_CURRENT)
+    REMAP_REPORT.append({
+        "source": source, "total": float(w.sum()),
+        "hors_communes_avant": float(w[before].sum()), "hors_communes_apres": float(w[after].sum()),
+        "reaffectes": float(w[changed].sum()),
+        "codes_restants": ", ".join(f"{k} ({int(v)})" for k, v in w[after].groupby(codes[after]).sum()
+                                    .sort_values(ascending=False).items()),
+    })
+    if changed.any():
+        g = pd.DataFrame({"ancien": codes[changed], "actuel": new[changed], "n": w[changed]}) \
+            .groupby(["ancien", "actuel"], as_index=False)["n"].sum()
+        for r in g.itertuples():
+            REMAP_DETAIL.append({"source": source, "ancien_code": r.ancien, "code_actuel": r.actuel, "n": r.n})
+    return new
 
 
 def pick_resource(api_json: dict, pattern: str, fmt=None):
@@ -338,6 +384,28 @@ def pick_resource(api_json: dict, pattern: str, fmt=None):
 # --------------------------------------------------------------------------- #
 # 4. Communes + population (backbone)
 # --------------------------------------------------------------------------- #
+def build_insee_remap(communes: list[dict]) -> None:
+    """Former code -> current commune, from the package itself:
+    - communes déléguées / associées whose code differs from their chef-lieu -> chefLieu;
+    - `anciensCodes` of a current commune (fusions, renumbering, 1968 départements) -> its code.
+    A code that is still a current commune / arrondissement is never remapped; a former code
+    claimed by two different current communes (2 cases, none in IDF) is left as is."""
+    current = {c["code"] for c in communes if c["type"] in ("commune-actuelle", "arrondissement-municipal")}
+    cand: dict[str, set[str]] = {}
+    for c in communes:
+        COMMUNE_NAMES.setdefault(c["code"], c["nom"])
+        target = c["code"] if c["type"] in ("commune-actuelle", "arrondissement-municipal") else c.get("chefLieu")
+        if c["type"] in ("commune-deleguee", "commune-associee") and c["code"] != target:
+            cand.setdefault(c["code"], set()).add(target)
+        for a in c.get("anciensCodes", []):
+            cand.setdefault(a, set()).add(target)
+    INSEE_REMAP.clear()
+    INSEE_REMAP.update({k: next(iter(v)) for k, v in cand.items()
+                        if len(v) == 1 and k not in current and None not in v})
+    INSEE_CURRENT.clear()
+    INSEE_CURRENT.update(c["code"] for c in communes if c["code"] in current and c.get("departement") in IDF_DEPS)
+
+
 def load_communes(workdir: Path) -> pd.DataFrame:
     """Return DataFrame: code_insee, nom, departement, population, niveau, commune_parent.
     Source: @etalab/decoupage-administratif (INSEE COG + populations de référence)."""
@@ -349,21 +417,12 @@ def load_communes(workdir: Path) -> pd.DataFrame:
     ver = ETALAB_COG_VERSION
     tarball = m["versions"][ver]["dist"]["tarball"]
     pub = m["time"].get(ver, "")[:10]
-    if not tgz.exists():
-        if not try_fetch("etalab_cog", tarball, tgz):
-            raise SystemExit("No commune backbone available — cannot build the table.")
+    got = fetch_cached("etalab_cog", tarball, tgz)
+    if not got:
+        raise SystemExit("No commune backbone available — cannot build the table.")
     with tarfile.open(tgz) as t:
         communes = json.load(t.extractfile("package/data/communes.json"))
-    # Merged communes: sources still carry former codes (e.g. 93059 Pierrefitte-sur-Seine ->
-    # 93066 Saint-Denis). Map them via `anciensCodes` of the current commune, and communes
-    # déléguées / associées via their `chefLieu`.
-    for c in communes:
-        if c["type"] == "commune-actuelle":
-            for old in c.get("anciensCodes", []):
-                ANCIENS_CODES.setdefault(old, c["code"])
-    for c in communes:
-        if c["type"] in ("commune-deleguee", "commune-associee") and c.get("chefLieu") not in (None, c["code"]):
-            ANCIENS_CODES.setdefault(c["code"], c["chefLieu"])
+    build_insee_remap(communes)
     rows = []
     for c in communes:
         if c.get("departement") not in IDF_DEPS:
@@ -388,8 +447,8 @@ def load_communes(workdir: Path) -> pd.DataFrame:
         "detail": f"Source retirée le 2026-10-01, remplacée par etalab_cog ({ver}) qui republie le même "
                   f"fichier INSEE : {POP_MILLESIME}. Non téléchargée."})
     log_source("etalab_cog", tarball, "OK", rows_raw=len(communes), rows_kept=len(out),
-               detail=f"package {ver} (publié le {pub}) ; population = {POP_MILLESIME}",
-               date=TODAY)
+               detail=f"package {ver} (publié le {pub}) — {origin_note(got)} ; population = {POP_MILLESIME}",
+               date=got["downloaded"])
     NOTES.append(f"Population : {POP_MILLESIME}, telles que republiées par @etalab/decoupage-administratif "
                  f"{ver} (publié le {pub}, version épinglée dans build.py). Cette source remplace l'ancienne "
                  f"source primaire `insee_pop` (fichier INSEE via data.gouv.fr), retirée le 2026-10-01.")
@@ -400,7 +459,9 @@ def load_communes(workdir: Path) -> pd.DataFrame:
 # 1. RNA
 # --------------------------------------------------------------------------- #
 RNA_USECOLS = ["id", "date_creat", "titre", "objet", "objet_social1", "objet_social2",
-               "adrs_codeinsee", "adrs_codepostal", "adrs_libcommune", "position", "nature"]
+               "adrs_codeinsee", "adrs_codepostal", "adrs_libcommune", "position", "nature",
+               "groupement", "rup_mi", "siret"]
+# siret / rup_mi are only turned into yes/no flags (size proxy for the top_associations sheets).
 # NOTE: dir_civilite, adrg_declarant, adrg_* (declarant's address), siteweb ... are deliberately
 # never loaded: no personal data of natural persons in the outputs.
 
@@ -416,25 +477,44 @@ def classify_vertical(fam: pd.Series, text: pd.Series) -> pd.Series:
 
 def load_rna(workdir: Path) -> pd.DataFrame | None:
     """IDF active associations with vertical. Reads the monthly Waldec zip in chunks."""
-    api = try_fetch("rna", SOURCES["rna"]["api_url"])
-    if not api:
-        # try the aggregated fallback dataset
-        api2 = try_fetch("rna_agrege", SOURCES["rna_agrege"]["api_url"])
-        if not api2:
-            return None
-        j = json.loads(api2)
-        key = "rna_agrege"
-    else:
-        j = json.loads(api)
-        key = "rna"
-    r = pick_resource(j, r"rna_waldec|waldec", fmt="zip") or pick_resource(j, r"waldec") or \
-        pick_resource(j, r"rna|association")
-    if not r:
-        log_source(key, SOURCES[key]["api_url"], "FAILED", detail="no Waldec resource found in API listing")
-        return None
+    # The file actually read decides what the `sources` sheet says: a zip already in raw/ is
+    # logged with its own origin URL and download date, whatever the API answers. The fallback
+    # dataset rna_agrege is only tried when there is neither an API answer nor a cached zip, and
+    # stays NOT_USED otherwise.
     zpath = workdir / "rna_waldec.zip"
-    if not zpath.exists() and not try_fetch(key, r["url"], zpath):
-        return None
+    api_err = None
+    try:
+        api = fetch(SOURCES["rna"]["api_url"])
+    except Exception as e:  # noqa: BLE001
+        api, api_err = None, f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+    key, got, r = "rna", None, None
+    if api:
+        r = pick_resource(json.loads(api), r"rna_waldec", fmt="zip")
+        if r:
+            got = fetch_cached("rna", r["url"], zpath, r.get("title", ""))
+        elif cache_meta(zpath) is None:
+            log_source("rna", SOURCES["rna"]["api_url"], "FAILED", detail="no rna_waldec zip in API listing")
+    if got is None and zpath.exists():
+        got = fetch_cached("rna", "", zpath)        # cached zip: no download
+    if got is None:
+        if api_err:
+            log_source("rna", SOURCES["rna"]["api_url"], "FAILED", detail=f"API unreachable: {api_err}")
+        api2 = try_fetch("rna_agrege", SOURCES["rna_agrege"]["api_url"])
+        r = pick_resource(json.loads(api2), r"waldec", fmt="zip") if api2 else None
+        if api2 and not r:
+            log_source("rna_agrege", SOURCES["rna_agrege"]["api_url"], "FAILED",
+                       detail="no zip resource in API listing (the parquet export is not read by build.py)")
+        if not r:
+            return None
+        key, zpath = "rna_agrege", workdir / "rna_agrege_waldec.zip"
+        got = fetch_cached("rna_agrege", r["url"], zpath, r.get("title", ""))
+        if not got:
+            return None
+    note = origin_note(got)
+    if api_err:
+        note += f" ; API data.gouv.fr indisponible pendant ce build ({api_err})"
+    elif r and got.get("cache") and got.get("url") and got["url"] != r["url"]:
+        note += f" ; fichier plus récent listé par l'API, non téléchargé : {r['url']}"
     kept, raw_total = [], 0
     with zipfile.ZipFile(zpath) as z:
         for name in z.namelist():
@@ -454,13 +534,20 @@ def load_rna(workdir: Path) -> pd.DataFrame | None:
     df = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=RNA_USECOLS)
     df["code_insee"] = df["adrs_codeinsee"].fillna("").str.strip()
     # fall back on code postal -> code insee is ambiguous; keep only rows with a code insee
-    # (an IDF code postal with a non-IDF code INSEE is dropped too)
-    df = df[(df["code_insee"].str.len() == 5) & is_idf_code(df["code_insee"])].copy()
+    # (an IDF code postal with a non-IDF code INSEE is dropped too). Former codes (communes
+    # fusionnées...) are first replaced by the current commune, so the IDF test sees both.
+    current = df["code_insee"].map(INSEE_REMAP).fillna(df["code_insee"])
+    df = df[(df["code_insee"].str.len() == 5) & (is_idf_code(df["code_insee"]) | is_idf_code(current))].copy()
+    df["code_insee"] = remap_insee(df["code_insee"], "RNA (associations actives)")
+    df = df[is_idf_code(df["code_insee"])].copy()
     df["famille_objet"] = df["objet_social1"].fillna("").str.strip().str[:3]
     df["vertical"] = classify_vertical(df["famille_objet"], df["titre"].fillna("") + " " + df["objet"].fillna(""))
-    log_source(key, r["url"], "OK", rows_raw=raw_total, rows_kept=len(df),
-               detail=f"{r.get('title','')} — filtered position='A' and IDF code INSEE/CP; "
-                      f"last_modified {str(r.get('last_modified',''))[:10]}")
+    log_source(key, got["url"] or "origine inconnue", "OK", rows_raw=raw_total, rows_kept=len(df),
+               date=got["downloaded"] or "inconnue",
+               detail=f"{Path(got['url']).name or zpath.name} — {note} — filtered position='A' and IDF code INSEE/CP")
+    if key == "rna":
+        log_source("rna_agrege", SOURCES["rna_agrege"]["api_url"], "NOT_USED",
+                   detail="source de secours non lue (fichier Waldec disponible)", date="")
     return df
 
 
@@ -497,7 +584,8 @@ def load_injep(workdir: Path):
         if not r:
             continue
         p = workdir / f"injep_{kind}.csv"
-        if not p.exists() and not try_fetch("injep", r["url"], p):
+        got = fetch_cached("injep", r["url"], p, r.get("title", ""))
+        if not got:
             continue
         parts = []
         raw = 0
@@ -526,11 +614,11 @@ def load_injep(workdir: Path):
             log_source("injep", r["url"], "FAILED", rows_raw=raw, detail="value column not recognised")
             continue
         df[val] = pd.to_numeric(df[val], errors="coerce").fillna(0)
-        df["code_insee"] = df[code].astype(str).str.zfill(5)
+        df["code_insee"] = remap_insee(df[code].astype(str).str.strip().str.zfill(5), f"INJEP {kind}", df[val])
         year = re.search(r"\d{4}", val) or re.search(r"\d{4}", r.get("title", ""))
         frames[kind] = (df, val, fed, fedcode, year.group(0) if year else "?")
-        log_source("injep", r["url"], "OK", rows_raw=raw, rows_kept=len(df),
-                   detail=f"{r.get('title','')} — value column '{val}'")
+        log_source("injep", got["url"] or r["url"], "OK", rows_raw=raw, rows_kept=len(df), date=got["downloaded"],
+                   detail=f"{r.get('title','')} — {origin_note(got)} — value column '{val}'")
     if not frames:
         return None, None
     pc = None
@@ -558,7 +646,8 @@ def load_data_es(workdir: Path):
         log_source("data_es", SOURCES["data_es"]["api_url"], "FAILED", detail="no CSV resource found")
         return None
     p = workdir / "data_es.csv"
-    if not p.exists() and not try_fetch("data_es", r["url"], p):
+    got = fetch_cached("data_es", r["url"], p, r.get("title", ""))
+    if not got:
         return None
     parts, raw = [], 0
     for chunk in pd.read_csv(p, sep=";", dtype=str, encoding="utf-8-sig", chunksize=100_000, on_bad_lines="skip"):
@@ -578,8 +667,10 @@ def load_data_es(workdir: Path):
     eqcol = [c for c in df.columns if c != "code_insee"]
     if eqcol:
         df = df.drop_duplicates(subset=eqcol)
+    df["code_insee"] = remap_insee(df["code_insee"], "Data ES (équipements)")
     g = df.groupby("code_insee").size().rename("equipements").reset_index()
-    log_source("data_es", r["url"], "OK", rows_raw=raw, rows_kept=len(df), detail=r.get("title", ""))
+    log_source("data_es", got["url"] or r["url"], "OK", rows_raw=raw, rows_kept=len(df), date=got["downloaded"],
+               detail=f"{r.get('title', '')} — {origin_note(got)}")
     return g
 
 
@@ -600,6 +691,40 @@ def rollup_paris(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, pd.DataFrame([tot])], ignore_index=True)
 
 
+TOP_N_PER_COMMUNE = 5
+GROUPEMENT_RANK = {"F": 0, "U": 1}   # fédération, union, then simple association (S / blank)
+GROUPEMENT_LABEL = {"F": "fédération", "U": "union", "S": "simple"}
+TOP_CRITERE = (
+    f"{TOP_N_PER_COMMUNE} associations par commune (ou arrondissement de Paris) et par feuille. Le RNA ne "
+    "publie ni nombre d'adhérents, ni budget, ni effectif : la taille est approchée, dans l'ordre, par "
+    "(1) le groupement (fédération, puis union, puis association simple), (2) la reconnaissance d'utilité "
+    "publique (rup_mi renseigné), (3) l'immatriculation SIRENE (siret renseigné : employeur, subventions "
+    "ou activité économique), (4) l'ancienneté (date de création la plus ancienne), puis le numéro RNA.")
+
+
+def top_associations(sub: pd.DataFrame, communes: pd.DataFrame) -> pd.DataFrame:
+    """Biggest associations (size proxy, see TOP_CRITERE) of every commune for one sheet."""
+    sub = sub.copy()
+    grp = sub["groupement"].fillna("").str.strip().str.upper()
+    sub["groupement_type"] = grp.map(GROUPEMENT_LABEL).fillna("simple")
+    sub["reconnue_utilite_publique"] = np.where(sub["rup_mi"].fillna("").str.strip() != "", "oui", "non")
+    sub["siret_renseigne"] = np.where(sub["siret"].fillna("").str.strip() != "", "oui", "non")
+    sub["_g"] = grp.map(GROUPEMENT_RANK).fillna(2)
+    sub["_d"] = pd.to_datetime(sub["date_creat"], errors="coerce").fillna(pd.Timestamp.max)
+    sub = sub.sort_values(["code_insee", "_g", "reconnue_utilite_publique", "siret_renseigne", "_d", "id"],
+                          ascending=[True, True, False, False, True, True])
+    sub = sub.groupby("code_insee", sort=False).head(TOP_N_PER_COMMUNE).copy()
+    sub["rang_dans_commune"] = sub.groupby("code_insee").cumcount() + 1
+    sub["commune"] = sub["code_insee"].map(communes.set_index("code_insee")["nom"])
+    sub["famille_objet_libelle"] = sub["famille_objet"].map(WALDEC_FAMILY_LABELS)
+    return sub[["code_insee", "commune", "rang_dans_commune", "id", "titre", "objet_social1",
+                "famille_objet_libelle", "vertical", "groupement_type", "reconnue_utilite_publique",
+                "siret_renseigne", "date_creat"]].rename(
+        columns={"id": "rna_id", "titre": "nom_association", "objet_social1": "code_objet_waldec",
+                 "date_creat": "date_creation"})
+    # objet (free text) is NOT exported: it can contain names of natural persons.
+
+
 def zscore(s: pd.Series) -> pd.Series:
     s = s.astype(float)
     sd = s.std(ddof=0)
@@ -616,14 +741,6 @@ def build(workdir: Path, outdir: Path):
     es = load_data_es(workdir)
 
     tbl = communes.copy()
-    valid = set(communes["code_insee"]) | {"75056"}
-    if rna is not None:
-        rna = remap_codes(rna, "RNA (associations)", valid)
-    if inj_commune is not None:
-        inj_commune = remap_codes(inj_commune, "INJEP (licences + clubs)", valid,
-                                  [c for c in ("licences", "clubs") if c in inj_commune.columns])
-    if es is not None:
-        es = remap_codes(es, "Data ES (équipements)", valid, ["equipements"])
     # --- RNA counts per vertical
     if rna is not None and len(rna):
         pv = rna.pivot_table(index="code_insee", columns="vertical", values="id", aggfunc="count", fill_value=0)
@@ -709,8 +826,7 @@ def build(workdir: Path, outdir: Path):
     tbl.insert(0, "rang", np.where(tbl["niveau"] == "commune",
                                    (tbl["niveau"] == "commune").cumsum(), np.nan))
 
-    # --- top associations per vertical for the top 20 communes
-    top20 = tbl[tbl["niveau"] == "commune"].head(20)["code_insee"].tolist()
+    # --- top associations per commune x vertical
     top_sheets = {}
     for sheet, vert in (("top_associations_sport", ["sport"]), ("top_associations_culture", ["culture"]),
                         ("top_associations_loisirs", ["fun", "gaming"])):
@@ -718,15 +834,7 @@ def build(workdir: Path, outdir: Path):
             top_sheets[sheet] = pd.DataFrame([{"note": "Source RNA indisponible lors de cette exécution "
                                                        "(voir feuille sources)."}])
             continue
-        codes = set(top20) | ({c for c in rna["code_insee"].unique() if c.startswith("751")} if "75056" in top20 else set())
-        sub = rna[rna["vertical"].isin(vert) & rna["code_insee"].isin(codes)].copy()
-        sub["famille_objet_libelle"] = sub["famille_objet"].map(WALDEC_FAMILY_LABELS)
-        sub = sub.sort_values(["code_insee", "date_creat"], ascending=[True, False]).head(500)
-        top_sheets[sheet] = sub[["id", "titre", "adrs_libcommune", "code_insee", "objet_social1",
-                                 "famille_objet_libelle", "vertical", "date_creat"]].rename(
-            columns={"id": "rna_id", "titre": "nom_association", "adrs_libcommune": "commune",
-                     "objet_social1": "code_objet_waldec", "date_creat": "date_creation"})
-        # objet (free text) is NOT exported: it can contain names of natural persons.
+        top_sheets[sheet] = top_associations(rna[rna["vertical"].isin(vert)], communes)
 
     fed_sheet = inj_fed if inj_fed is not None else pd.DataFrame(
         [{"note": "Source INJEP indisponible lors de cette exécution (voir feuille sources)."}])
@@ -740,6 +848,23 @@ def build(workdir: Path, outdir: Path):
         {"regle": "wellness", "condition": "vertical fun/sport/asso ET titre/objet ~ " + KW_WELLNESS.pattern, "priorite": 3},
     ])
 
+    remap_report = pd.DataFrame(REMAP_REPORT)
+    remap_detail = pd.DataFrame(REMAP_DETAIL, columns=["source", "ancien_code", "code_actuel", "n"])
+    if len(remap_detail):
+        remap_detail = remap_detail.pivot_table(index=["ancien_code", "code_actuel"], columns="source",
+                                                values="n", aggfunc="sum", fill_value=0).reset_index()
+        remap_detail.columns.name = None
+        # the package names déléguées / associées, not bare `anciensCodes`
+        remap_detail.insert(1, "nom_ancien", remap_detail["ancien_code"].map(COMMUNE_NAMES)
+                            .fillna("(ancien code, nom non fourni par le paquet)"))
+        remap_detail.insert(3, "nom_actuel", remap_detail["code_actuel"].map(COMMUNE_NAMES))
+        sort_col = next((c for c in remap_detail.columns if c.startswith("RNA")), remap_detail.columns[-1])
+        remap_detail = remap_detail.sort_values(sort_col, ascending=False)
+    for r in REMAP_REPORT:
+        print(f"[remap] {r['source']}: hors communes {r['hors_communes_avant']:.0f} -> "
+              f"{r['hors_communes_apres']:.0f} (réaffectés {r['reaffectes']:.0f}) ; restants : "
+              f"{r['codes_restants'] or '—'}", file=sys.stderr)
+
     xlsx = outdir / f"RLL-IDF-villes-x-verticals-{VERSION}.xlsx"
     with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
         tbl.to_excel(xw, sheet_name="villes_x_verticals", index=False)
@@ -749,6 +874,9 @@ def build(workdir: Path, outdir: Path):
         sources.to_excel(xw, sheet_name="sources", index=False)
         mapping.to_excel(xw, sheet_name="mapping_waldec_verticals", index=False)
         mapping_kw.to_excel(xw, sheet_name="mapping_waldec_verticals", index=False, startrow=len(mapping) + 3)
+        remap_report.to_excel(xw, sheet_name="correspondance_communes", index=False)
+        remap_detail.to_excel(xw, sheet_name="correspondance_communes", index=False,
+                              startrow=len(remap_report) + 3)
         # cosmetic: freeze header, autosize
         for ws in xw.book.worksheets:
             ws.freeze_panes = "A2"
@@ -756,11 +884,18 @@ def build(workdir: Path, outdir: Path):
                 width = min(60, max(10, max(len(str(c.value)) if c.value is not None else 0 for c in col[:200]) + 2))
                 ws.column_dimensions[col[0].column_letter].width = width
     tbl.to_csv(outdir / f"RLL-IDF-villes-x-verticals-{VERSION}.csv", index=False, sep=";", encoding="utf-8-sig")
-    write_readme(outdir, sources, mapping, mapping_kw, tbl)
+    write_readme(outdir, sources, mapping, mapping_kw, remap_report, remap_detail)
     return tbl, sources
 
 
-def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, mapping_kw: pd.DataFrame, tbl: pd.DataFrame):
+README_BEGIN = "<!-- BEGIN GENERATED: build.py -->"
+README_END = "<!-- END GENERATED: build.py -->"
+
+
+def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, mapping_kw: pd.DataFrame,
+                 remap_report: pd.DataFrame, remap_detail: pd.DataFrame):
+    """Rewrite the generated part between the README_BEGIN / README_END markers of the pipeline
+    README, leaving the rest of that file as is. Nothing is written to `outdir`."""
     lines = [f"# RLL — IDF villes × verticals {VERSION} — sources & méthode", "",
              f"Généré le {TODAY} par `build.py` (reproductible : `python3 build.py`).", "",
              "Périmètre : Île-de-France (75, 77, 78, 91, 92, 93, 94, 95). Données ouvertes françaises uniquement. "
@@ -801,23 +936,50 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
         "- Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, "
         "hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios "
         "pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de "
-        "marché ni une prédiction. Biais connus, conservés volontairement (décision 2026-10-01) : les "
-        "ratios font remonter des micro-communes (ex. Clairefontaine-en-Yvelines, ~850 hab., au 2e rang) ; "
-        "les arrondissements d'affaires gonflent `assos_per_1k` (Paris 8e : ~170 associations pour 1 000 hab., "
-        "sièges sociaux domiciliés). Un seuil de population sera appliqué dans la vue « villes suivantes » (G-003).",
+        "marché ni une prédiction.",
+        "- Biais connus du score (décision 2026-10-01 : score inchangé) : (1) les ratios pour 1 000 habitants placent "
+        "des micro-communes en tête malgré le plafonnement au 99e centile — un seuil de population sera appliqué "
+        "dans la vue « villes suivantes » (G-003) ; (2) les arrondissements centraux de Paris (1er–9e : 8e à ~170 "
+        "et 1er à ~146 associations pour 1 000 habitants, contre ~50 pour Paris entier) sont gonflés par les "
+        "sièges sociaux domiciliés (domiciliation, sièges nationaux), qui ne reflètent pas une activité locale.",
         "- Paris figure en une ligne `commune` (75056) plus 20 lignes `arrondissement` (75101–75120) ; le rang n'est "
-        "attribué qu'aux communes.",
+        "attribué qu'aux communes. **Sommer toutes les lignes compte Paris deux fois** (75056 = somme des "
+        "arrondissements) : pour un total régional, filtrer `niveau = commune`.",
         "- RNA : seules les associations `position = A` (actives) avec un code INSEE de commune IDF sont comptées ; "
         "le champ `adrs_codeinsee` peut être vide/obsolète pour des associations anciennes (sous-estimation possible). "
         "Le fichier Waldec ne couvre pas l'Alsace-Moselle (hors périmètre ici).",
         "- Mapping objets Waldec → verticals RLL : par famille (3 premiers caractères de `objet_social1`), puis règles "
-        "par mots-clés (alumni, gaming, wellness). La nomenclature officielle des objets sociaux doit être vérifiée "
-        "contre le fichier de référence publié avec le RNA ; le mapping reste une convention RLL, discutable pour "
-        "005 (information/communication → culture), 015 (éducation → asso), 013 (chasse/pêche → nature) et 027 (tourisme → fun).",
+        "par mots-clés (alumni, gaming, wellness). Mapping validé par Christophe le 2026-10-01 ; libellés vérifiés "
+        "contre la nomenclature WALDEC et les titres réels du fichier RNA (les familles 025–029 n'existent pas ; "
+        "030–050 étaient décalées en v0.1). Les codes hors nomenclature présents dans le fichier (000, 008, 012, vide, "
+        "quelques codes isolés) tombent en `other`. Le mapping reste une convention RLL, discutable pour "
+        "005 (information/communication → culture), 015 (éducation → asso), 013 (chasse/pêche → nature) et 034 (tourisme → fun).",
+        "- Communes fusionnées : avant agrégation par commune, les anciens codes INSEE du RNA, de l'INJEP et de Data ES "
+        "sont remplacés par le code de la commune actuelle (table construite depuis @etalab/decoupage-administratif "
+        f"{ETALAB_COG_VERSION} : communes déléguées/associées → `chefLieu`, `anciensCodes` d'une commune actuelle → son "
+        "code ; un code encore actuel n'est jamais réaffecté). Le fichier des mouvements du COG de l'INSEE n'a pas été "
+        "nécessaire (aucun code ancien résiduel ne relève d'une fusion). Détail : feuille `correspondance_communes`.",
+        "- Feuilles `top_associations_*` : " + TOP_CRITERE + " Dénominations d'associations conservées (personnes "
+        "morales, décision 2026-10-01) ; aucun champ nominatif ni `objet` libre.",
         "- INJEP : millésime = dernier disponible dans le jeu de données au moment du build (voir `sources`). Les licences "
         "sont comptées au lieu de résidence du licencié, les clubs au siège du club.",
         "- Data ES : un équipement = une ligne dédoublonnée sur l'identifiant d'équipement ; les lieux de pratique "
         "non bâtis (sentiers, plans d'eau) sont inclus.",
+        "", "## Communes fusionnées — écart avant / après", "",
+        "| Source | Total IDF | Hors communes avant | Hors communes après | Réaffectés | Codes restants (non INSEE) |",
+        "|---|---|---|---|---|---|"]
+    for _, r in remap_report.iterrows():
+        lines.append(f"| {r['source']} | {r['total']:.0f} | {r['hors_communes_avant']:.0f} | "
+                     f"{r['hors_communes_apres']:.0f} | {r['reaffectes']:.0f} | {r['codes_restants'] or '—'} |")
+    if len(remap_detail):
+        val_cols = [c for c in remap_detail.columns if c not in ("ancien_code", "nom_ancien", "code_actuel", "nom_actuel")]
+        lines += ["", "Anciens codes réaffectés (10 premiers, par nombre d'associations) :", "",
+                  "| Ancien code | Ancienne commune | Code actuel | Commune actuelle | " + " | ".join(val_cols) + " |",
+                  "|---" * (4 + len(val_cols)) + "|"]
+        for _, r in remap_detail.head(10).iterrows():
+            lines.append(f"| {r['ancien_code']} | {r['nom_ancien']} | {r['code_actuel']} | {r['nom_actuel']} | "
+                         + " | ".join(f"{r[c]:.0f}" for c in val_cols) + " |")
+    lines += [
         "", "## Mapping familles Waldec → verticals RLL", "",
         "| Famille | Libellé | Vertical RLL |", "|---|---|---|"]
     for _, r in mapping.iterrows():
@@ -827,19 +989,30 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
         lines.append(f"- **{r['regle']}** (priorité {r['priorite']}) : {r['condition']}")
     lines += ["", "## Fichiers", "",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.xlsx` — feuilles : villes_x_verticals, top_associations_sport, "
-              "top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals",
+              "top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, "
+              "correspondance_communes",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.csv` — feuille principale (séparateur `;`, UTF-8 BOM)",
               "- `build.py` — script de construction", "",
               "## Hôtes requis", "",
               "`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA "
               "Waldec), `data.education.gouv.fr` (exports Data ES), `registry.npmjs.org` (paquet etalab).", ""]
-    (PIPELINE_DIR / "README-sources.md").write_text("\n".join(lines), encoding="utf-8")
+    text = "\n".join(lines)
+    readme = PIPELINE_DIR / "README-sources.md"
+    current = readme.read_text(encoding="utf-8") if readme.exists() else ""
+    if README_BEGIN in current and README_END in current:
+        head, rest = current.split(README_BEGIN, 1)
+        tail = rest.split(README_END, 1)[1]
+        readme.write_text(f"{head}{README_BEGIN}\n{text}\n{README_END}{tail}", encoding="utf-8")
+    else:
+        print(f"[readme] markers not found in {readme}; README left unchanged", file=sys.stderr)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workdir", default=str(PIPELINE_DIR / "raw"))
-    ap.add_argument("--out", default=str(PIPELINE_DIR / "out"))
+    # Defaults are relative to this file, not to the current directory: pipelines/fr-idf/raw and
+    # pipelines/fr-idf/out whether build.py is run from the repo root or from the pipeline folder.
+    ap.add_argument("--workdir", default=str(PIPELINE_DIR / "raw"), help="raw downloads (default: pipelines/fr-idf/raw)")
+    ap.add_argument("--out", default=str(PIPELINE_DIR / "out"), help="outputs (default: pipelines/fr-idf/out)")
     a = ap.parse_args()
     tbl, src = build(Path(a.workdir), Path(a.out))
     print(src.to_string(), file=sys.stderr)
