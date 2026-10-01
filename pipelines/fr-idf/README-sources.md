@@ -10,6 +10,65 @@ brutes vont dans `raw/` (ignoré par git), chacune avec un fichier `<nom>.source
 téléchargement) : un fichier déjà présent dans `raw/` est relu tel quel, et la feuille `sources` indique alors
 « cache local raw/ » avec sa date de téléchargement réelle.
 
+## Focus villes pilotes (G-003) — option `--focus` et feuilles `focus_*`
+
+`python3 pipelines/fr-idf/build.py --focus 91312 91477 91645 92060` (codes INSEE séparés par des espaces ou des
+virgules). Valeur par défaut : les 4 villes pilotes — Igny (91312), Palaiseau (91477), Verrières-le-Buisson (91645),
+Le Plessis-Robinson (92060). Un code qui n'est pas une commune IDF arrête le build avant tout calcul (les
+arrondissements de Paris sont refusés).
+
+Les trois feuilles sont des **vues** sur la table `villes_x_verticals` et sur les associations RNA déjà chargées :
+elles ne téléchargent rien de plus (les EPCI/EPT viennent des fichiers `epci.json` et `ept.json` du paquet
+@etalab/decoupage-administratif 6.0.0, déjà source de la population) et ne modifient ni le score, ni les autres
+feuilles, ni le CSV. Elles sont ajoutées après les feuilles existantes. Les seuils sont des constantes en tête de
+`build.py` (`FOCUS_STRATE`, `FOCUS_TOP_N`, `VAGUE2_POP_MIN`, `VAGUE2_TOP_N`).
+
+**Références de comparaison.**
+- *IDF* : toutes les communes IDF de niveau `commune` (arrondissements exclus, Paris compté une fois en 75056).
+- *Strate* : parmi elles, les communes de 10 000 à 40 000 habitants (population municipale, bornes incluses).
+  Les 4 villes pilotes y sont toutes (Igny ~10 800 hab. est proche de la borne basse) ; la colonne `dans_strate`
+  le signale pour un focus différent.
+- *Percentile* : rang moyen, 0–100 = part des communes de la référence dont la densité est strictement inférieure,
+  plus la moitié des ex aequo (les nombreuses communes à 0 association d'un vertical se partagent donc le même
+  percentile, et une ville à 0 n'est pas au percentile 0). Une densité est un nombre pour 1 000 habitants.
+
+**`focus_profil`** — une ligne par ville × mesure, au format long (choisi plutôt que des colonnes pour garder les
+mêmes colonnes de comparaison sur chaque ligne et pouvoir filtrer/trier) :
+- `vertical` = `total` (toutes associations), puis les 11 verticals RLL (dont `other`), puis deux lignes sport hors
+  RNA : `sport_licences` (licences INJEP, au lieu de résidence du licencié) et `sport_equipements` (équipements
+  Data ES) ;
+- `mesure` dit ce qui est compté ; `nombre` et `pour_1000_hab` sont donc le nombre d'associations et les
+  associations pour 1 000 habitants sur les lignes RNA, et le nombre de licences / d'équipements (et leur densité)
+  sur les deux lignes sport ;
+- `percentile_IDF`, `percentile_strate`, `mediane_IDF_pour_1000_hab`, `mediane_strate_pour_1000_hab` : position de
+  la ville et médianes des deux références, pour la même mesure.
+
+**`focus_associations`** — pour chaque ville du focus et chaque vertical sauf `other`, les 10 associations les plus
+structurées, avec exactement le critère et les colonnes des feuilles `top_associations_*` (fédération puis union,
+reconnaissance d'utilité publique, SIRET renseigné, ancienneté, puis numéro RNA). Personne morale uniquement :
+`rna_id`, dénomination, code et famille Waldec, vertical, groupement, RUP oui/non, SIRET renseigné oui/non, date de
+création. Le rang (`rang_dans_commune_vertical`) est calculé par ville × vertical. Un vertical a moins de 10 lignes
+quand la ville a moins de 10 associations actives dans ce vertical.
+
+**`focus_vague2`** — liste de travail pour la vague suivante (le choix des villes revient à Christophe) :
+- candidates : communes IDF hors focus, hors arrondissements, **population ≥ 5 000 habitants** (seuil qui neutralise
+  le biais « micro-communes » du score sans le modifier) ;
+- situées dans le même territoire qu'une ville du focus **ou** dans le même département ; `critere` indique lequel
+  s'applique (`EPCI`, `EPT`, `département`, ou les deux, ex. `EPCI et département`), `villes_focus_liees` avec
+  quelle(s) ville(s) du focus ;
+- territoire : l'EPCI à fiscalité propre, sauf dans la **Métropole du Grand Paris** (130 communes, trop large pour
+  dire « voisine ») où l'on prend l'**établissement public territorial** (EPT, disponible dans
+  decoupage-administratif 6.0.0, `ept.json`). Paris n'appartient à aucun EPT : pour Paris, seul le critère
+  département joue ;
+- classement par `score_potentiel_RLL` (inchangé ; à égalité, population décroissante), 15 premières ;
+- `vertical_dense_1..3` : les 3 verticals (hors `other`) où la commune a le **percentile** de densité
+  d'associations le plus élevé, calculé parmi les communes IDF de 5 000 habitants ou plus (la population des
+  candidates). C'est une densité relative aux autres communes : en valeur brute pour 1 000 habitants, `asso` et
+  `sport` arriveraient en tête partout. La référence n'est pas « toutes les communes IDF » : dans les villages, les
+  verticals rares (alumni, gaming, family) sont presque toujours à 0 (75 % des communes IDF pour alumni), si bien
+  qu'une seule association de ce type suffirait à placer le vertical en tête ; au-delà de 5 000 habitants, la part
+  de zéros tombe à 38 % pour alumni, 20 % pour gaming, 11 % pour family et ~0 % pour les autres.
+
 <!-- BEGIN GENERATED: build.py -->
 # RLL — IDF villes × verticals v0.1 — sources & méthode
 
@@ -30,12 +89,12 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 | # | Source | URL | Licence | Date | Statut | Lignes brutes | Lignes IDF conservées | Détail |
 |---|---|---|---|---|---|---|---|---|
 | 1 | INSEE — Populations légales par commune (fichier national) | https://www.insee.fr/fr/statistiques/8680726 | Licence Ouverte / Open Licence 2.0 (Etalab) |  | **RETIRÉE** |  |  | Source retirée le 2026-10-01, remplacée par etalab_cog (6.0.0) qui republie le même fichier INSEE : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726. Non téléchargée. |
-| 2 | @etalab/decoupage-administratif (npm) — COG + populations de référence INSEE republiés (source de population) | https://registry.npmjs.org/@etalab/decoupage-administratif/-/decoupage-administratif-6.0.0.tgz | Données : Licence Ouverte (Etalab) — code : MIT | 2026-10-01 | **OK** | 37590 | 1286 | package 6.0.0 (publié le 2026-03-09) — téléchargé pendant ce build (2026-10-01) ; population = populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726 |
-| 3 | RNA — Répertoire National des Associations (fichier Waldec mensuel) | https://media.interieur.gouv.fr/rna/rna_waldec_20261001.zip | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 2314908 | 331435 | rna_waldec_20261001.zip — téléchargé pendant ce build (2026-10-01) — filtered position='A' and IDF code INSEE/CP |
+| 2 | @etalab/decoupage-administratif (npm) — COG + populations de référence INSEE republiés (source de population) | https://registry.npmjs.org/@etalab/decoupage-administratif/-/decoupage-administratif-6.0.0.tgz | Données : Licence Ouverte (Etalab) — code : MIT | 2026-10-01 | **OK** | 37590 | 1286 | package 6.0.0 (publié le 2026-03-09) — cache local raw/ (téléchargé le 2026-10-01) ; population = populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726 |
+| 3 | RNA — Répertoire National des Associations (fichier Waldec mensuel) | https://media.interieur.gouv.fr/rna/rna_waldec_20261001.zip | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 2314908 | 331435 | rna_waldec_20261001.zip — cache local raw/ (téléchargé le 2026-10-01) — filtered position='A' and IDF code INSEE/CP |
 | 4 | RNA agrégé à l'échelle nationale (fallback) | https://www.data.gouv.fr/api/1/datasets/rna-agrege-a-lechelle-nationale/ | Licence Ouverte / Open Licence 2.0 (Etalab) |  | **NOT_USED** |  |  | source de secours non lue (fichier Waldec disponible) |
-| 5 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163107/lic-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 1014746 | 73285 | lic-data-2023.csv — téléchargé pendant ce build (2026-10-01) — value column 'Total' |
-| 6 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163249/clubs-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 121700 | 12697 | clubs-data-2023.csv — téléchargé pendant ce build (2026-10-01) — value column 'Clubs' |
-| 7 | Data ES — Recensement des équipements sportifs et lieux de pratique (complet) | https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/exports/csv?use_labels=true | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 333720 | 30070 | data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet.csv — téléchargé pendant ce build (2026-10-01) |
+| 5 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163107/lic-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 1014746 | 73285 | lic-data-2023.csv — cache local raw/ (téléchargé le 2026-10-01) — value column 'Total' |
+| 6 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163249/clubs-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 121700 | 12697 | clubs-data-2023.csv — cache local raw/ (téléchargé le 2026-10-01) — value column 'Clubs' |
+| 7 | Data ES — Recensement des équipements sportifs et lieux de pratique (complet) | https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/exports/csv?use_labels=true | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 333720 | 30070 | data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet.csv — cache local raw/ (téléchargé le 2026-10-01) |
 
 ## Notes et réserves
 
@@ -43,7 +102,7 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 - INJEP licences: year 2023 (latest available in the dataset at build time).
 - INJEP clubs: year 2023 (latest available in the dataset at build time).
 - Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de marché ni une prédiction.
-- Biais connus du score (décision 2026-10-01 : score inchangé) : (1) les ratios pour 1 000 habitants placent des micro-communes en tête malgré le plafonnement au 99e centile — un seuil de population sera appliqué dans la vue « villes suivantes » (G-003) ; (2) les arrondissements centraux de Paris (1er–9e : 8e à ~170 et 1er à ~146 associations pour 1 000 habitants, contre ~50 pour Paris entier) sont gonflés par les sièges sociaux domiciliés (domiciliation, sièges nationaux), qui ne reflètent pas une activité locale.
+- Biais connus du score (décision 2026-10-01 : score inchangé) : (1) les ratios pour 1 000 habitants placent des micro-communes en tête malgré le plafonnement au 99e centile — un seuil de population (≥ 5000 habitants) est appliqué dans la feuille `focus_vague2` (G-003) ; (2) les arrondissements centraux de Paris (1er–9e : 8e à ~170 et 1er à ~146 associations pour 1 000 habitants, contre ~50 pour Paris entier) sont gonflés par les sièges sociaux domiciliés (domiciliation, sièges nationaux), qui ne reflètent pas une activité locale.
 - Paris figure en une ligne `commune` (75056) plus 20 lignes `arrondissement` (75101–75120) ; le rang n'est attribué qu'aux communes. **Sommer toutes les lignes compte Paris deux fois** (75056 = somme des arrondissements) : pour un total régional, filtrer `niveau = commune`.
 - RNA : seules les associations `position = A` (actives) avec un code INSEE de commune IDF sont comptées ; le champ `adrs_codeinsee` peut être vide/obsolète pour des associations anciennes (sous-estimation possible). Le fichier Waldec ne couvre pas l'Alsace-Moselle (hors périmètre ici).
 - Mapping objets Waldec → verticals RLL : par famille (3 premiers caractères de `objet_social1`), puis règles par mots-clés (alumni, gaming, wellness). Mapping validé par Christophe le 2026-10-01 ; libellés vérifiés contre la nomenclature WALDEC et les titres réels du fichier RNA (les familles 025–029 n'existent pas ; 030–050 étaient décalées en v0.1). Les codes hors nomenclature présents dans le fichier (000, 008, 012, vide, quelques codes isolés) tombent en `other`. Le mapping reste une convention RLL, discutable pour 005 (information/communication → culture), 015 (éducation → asso), 013 (chasse/pêche → nature) et 034 (tourisme → fun).
@@ -51,6 +110,8 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 - Feuilles `top_associations_*` : 5 associations par commune (ou arrondissement de Paris) et par feuille. Le RNA ne publie ni nombre d'adhérents, ni budget, ni effectif : la taille est approchée, dans l'ordre, par (1) le groupement (fédération, puis union, puis association simple), (2) la reconnaissance d'utilité publique (rup_mi renseigné), (3) l'immatriculation SIRENE (siret renseigné : employeur, subventions ou activité économique), (4) l'ancienneté (date de création la plus ancienne), puis le numéro RNA. Dénominations d'associations conservées (personnes morales, décision 2026-10-01) ; aucun champ nominatif ni `objet` libre.
 - INJEP : millésime = dernier disponible dans le jeu de données au moment du build (voir `sources`). Les licences sont comptées au lieu de résidence du licencié, les clubs au siège du club.
 - Data ES : un équipement = une ligne dédoublonnée sur l'identifiant d'équipement ; les lieux de pratique non bâtis (sentiers, plans d'eau) sont inclus.
+- Focus (G-003) : Igny (91312), Palaiseau (91477), Verrières-le-Buisson (91645), Le Plessis-Robinson (92060) (option `--focus`). Références des percentiles : 1266 communes IDF (hors arrondissements, Paris compté une fois) ; strate 10000–40000 habitants : 200 communes ; `vertical_dense_*` de `focus_vague2` : 377 communes de 5000 habitants ou plus. Méthode : voir la partie rédigée de ce README.
+- Territoires (feuille `focus_vague2`) : `epci.json` (1255 EPCI à fiscalité propre) et `ept.json` (11 établissements publics territoriaux) du paquet @etalab/decoupage-administratif 6.0.0 déjà utilisé pour la population : aucune nouvelle source. Métropole du Grand Paris → EPT ; Paris, hors EPT → département.
 
 ## Communes fusionnées — écart avant / après
 
@@ -118,7 +179,7 @@ Règles par mots-clés (appliquées après le mapping par famille) :
 
 ## Fichiers
 
-- `RLL-IDF-villes-x-verticals-v0.1.xlsx` — feuilles : villes_x_verticals, top_associations_sport, top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, correspondance_communes
+- `RLL-IDF-villes-x-verticals-v0.1.xlsx` — feuilles : villes_x_verticals, top_associations_sport, top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, correspondance_communes, focus_profil, focus_associations, focus_vague2
 - `RLL-IDF-villes-x-verticals-v0.1.csv` — feuille principale (séparateur `;`, UTF-8 BOM)
 - `build.py` — script de construction
 

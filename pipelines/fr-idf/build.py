@@ -25,7 +25,12 @@ continues with what it has. Nothing is scraped.
 Privacy: no personal data of natural persons is ever written to the outputs.
 RNA columns naming people (dir_civilite, adrg_declarant, ...) are never loaded.
 
-Reproduce:  python3 build.py [--workdir DIR] [--out DIR]
+Focus (G-003): `--focus` takes INSEE codes (default: the 4 pilot cities) and adds the sheets
+focus_profil, focus_associations and focus_vague2. They are views on the table above: they read the
+same sources (raw/) plus the EPCI / EPT files of the same etalab package, and change nothing in
+the other sheets nor in the CSV.
+
+Reproduce:  python3 build.py [--workdir DIR] [--out DIR] [--focus CODE [CODE ...]]
 Requires: pandas, openpyxl (pip install --break-system-packages pandas openpyxl)
 """
 from __future__ import annotations
@@ -107,6 +112,15 @@ SOURCES = {
 ETALAB_COG_VERSION = "6.0.0"
 POP_MILLESIME = ("populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), "
                  "population municipale — https://www.insee.fr/fr/statistiques/8680726")
+
+# --------------------------------------------------------------------------- #
+# Focus (G-003): pilot cities and the thresholds of the focus_* views
+# --------------------------------------------------------------------------- #
+FOCUS_DEFAULT = ["91312", "91477", "91645", "92060"]   # Igny, Palaiseau, Verrières-le-Buisson, Le Plessis-Robinson
+FOCUS_STRATE = (10_000, 40_000)    # comparison stratum (population municipale, bounds included)
+FOCUS_TOP_N = 10                   # focus_associations: associations per city x vertical
+VAGUE2_POP_MIN = 5_000             # focus_vague2: population threshold (score bias 1, micro-communes)
+VAGUE2_TOP_N = 15
 
 # --------------------------------------------------------------------------- #
 # RNA Waldec "objet social" families -> RLL verticals
@@ -344,6 +358,11 @@ def is_idf_code(s: pd.Series) -> pd.Series:
 INSEE_REMAP: dict[str, str] = {}
 INSEE_CURRENT: set[str] = set()      # IDF communes actuelles + arrondissements municipaux
 COMMUNE_NAMES: dict[str, str] = {}   # every code in the package (current and former) -> nom
+# IDF commune -> its territory for focus_vague2: EPT for the Métropole du Grand Paris (ept.json),
+# EPCI à fiscalité propre otherwise (epci.json). Filled by load_communes(); read by the focus views only.
+TERRITOIRES: dict[str, dict] = {}
+TERRITOIRES_SRC: dict[str, int] = {}
+FOCUS_INFO: dict = {}                # focus codes and reference sizes -> README
 REMAP_REPORT: list[dict] = []        # per source: orphans before / after -> README + sheet
 REMAP_DETAIL: list[dict] = []        # per source x former code: rows / value reassigned
 
@@ -406,6 +425,23 @@ def build_insee_remap(communes: list[dict]) -> None:
     INSEE_CURRENT.update(c["code"] for c in communes if c["code"] in current and c.get("departement") in IDF_DEPS)
 
 
+def load_territoires(epci: list[dict], ept: list[dict]) -> None:
+    """IDF commune -> territory used by focus_vague2. The Métropole du Grand Paris (METRO, 130 communes)
+    is too wide to mean "nearby": its communes take their établissement public territorial (ept.json,
+    INSEE, 11 EPT). Paris (75056) is a territory on its own and is in no EPT: it keeps the MGP as EPCI
+    and focus_vague2 falls back on the département for it."""
+    TERRITOIRES.clear()
+    for e in epci:
+        for m in e["membres"]:
+            if m["code"][:2] in IDF_DEPS:
+                TERRITOIRES[m["code"]] = {"type": "EPCI", "code": e["code"], "nom": e["nom"],
+                                          "metropole": e["type"] == "METRO"}
+    for e in ept:
+        for m in e["membres"]:
+            TERRITOIRES[m["code"]] = {"type": "EPT", "code": e["code"], "nom": e["nom"], "metropole": True}
+    TERRITOIRES_SRC.update(n_epci=len(epci), n_ept=len(ept))
+
+
 def load_communes(workdir: Path) -> pd.DataFrame:
     """Return DataFrame: code_insee, nom, departement, population, niveau, commune_parent.
     Source: @etalab/decoupage-administratif (INSEE COG + populations de référence)."""
@@ -422,7 +458,10 @@ def load_communes(workdir: Path) -> pd.DataFrame:
         raise SystemExit("No commune backbone available — cannot build the table.")
     with tarfile.open(tgz) as t:
         communes = json.load(t.extractfile("package/data/communes.json"))
+        epci = json.load(t.extractfile("package/data/epci.json"))
+        ept = json.load(t.extractfile("package/data/ept.json"))
     build_insee_remap(communes)
+    load_territoires(epci, ept)
     rows = []
     for c in communes:
         if c.get("departement") not in IDF_DEPS:
@@ -702,7 +741,7 @@ TOP_CRITERE = (
     "ou activité économique), (4) l'ancienneté (date de création la plus ancienne), puis le numéro RNA.")
 
 
-def top_associations(sub: pd.DataFrame, communes: pd.DataFrame) -> pd.DataFrame:
+def top_associations(sub: pd.DataFrame, communes: pd.DataFrame, n: int = TOP_N_PER_COMMUNE) -> pd.DataFrame:
     """Biggest associations (size proxy, see TOP_CRITERE) of every commune for one sheet."""
     sub = sub.copy()
     grp = sub["groupement"].fillna("").str.strip().str.upper()
@@ -713,7 +752,7 @@ def top_associations(sub: pd.DataFrame, communes: pd.DataFrame) -> pd.DataFrame:
     sub["_d"] = pd.to_datetime(sub["date_creat"], errors="coerce").fillna(pd.Timestamp.max)
     sub = sub.sort_values(["code_insee", "_g", "reconnue_utilite_publique", "siret_renseigne", "_d", "id"],
                           ascending=[True, True, False, False, True, True])
-    sub = sub.groupby("code_insee", sort=False).head(TOP_N_PER_COMMUNE).copy()
+    sub = sub.groupby("code_insee", sort=False).head(n).copy()
     sub["rang_dans_commune"] = sub.groupby("code_insee").cumcount() + 1
     sub["commune"] = sub["code_insee"].map(communes.set_index("code_insee")["nom"])
     sub["famille_objet_libelle"] = sub["famille_objet"].map(WALDEC_FAMILY_LABELS)
@@ -731,11 +770,145 @@ def zscore(s: pd.Series) -> pd.Series:
     return (s - s.mean()) / sd if sd and not np.isnan(sd) else s * 0
 
 
-def build(workdir: Path, outdir: Path):
+# --------------------------------------------------------------------------- #
+# Focus views (G-003). Read-only on `tbl`: the score and the other sheets are left as they are.
+# --------------------------------------------------------------------------- #
+FOCUS_MEASURES = ([("total", "associations (toutes)", "assos_total")]
+                  + [(v, "associations", f"assos_{v}") for v in VERTICALS]
+                  + [("sport_licences", "licences sportives (INJEP)", "licences_sport"),
+                     ("sport_equipements", "équipements sportifs (Data ES)", "equipements_sportifs")])
+
+
+def percentile(ref: pd.Series, x: float) -> float:
+    """Mid-rank percentile of `x` in `ref`: share of `ref` strictly below x, plus half the ties (0-100)."""
+    ref = ref.dropna()
+    if pd.isna(x) or ref.empty:
+        return np.nan
+    return round(100 * ((ref < x).sum() + 0.5 * (ref == x).sum()) / len(ref), 1)
+
+
+def density_frame(tbl: pd.DataFrame) -> pd.DataFrame:
+    """code_insee-indexed per-1 000-inhabitant density of every FOCUS_MEASURES base column."""
+    pop = pd.to_numeric(tbl["population"], errors="coerce").replace(0, np.nan)
+    d = pd.DataFrame({base: tbl[base].astype(float) / pop * 1000 for _, _, base in FOCUS_MEASURES})
+    d.index = tbl["code_insee"].values
+    return d
+
+
+def focus_refs(tbl: pd.DataFrame):
+    """Reference sets: IDF communes (no arrondissements; Paris counted once as 75056) and the
+    10 000 - 40 000 inhabitants stratum within them."""
+    com = tbl[tbl["niveau"] == "commune"]
+    pop = pd.to_numeric(com["population"], errors="coerce")
+    strate = com[(pop >= FOCUS_STRATE[0]) & (pop <= FOCUS_STRATE[1])]
+    return com["code_insee"].tolist(), strate["code_insee"].tolist()
+
+
+def focus_profil(tbl: pd.DataFrame, focus: list[str]) -> pd.DataFrame:
+    dens = density_frame(tbl)
+    ref_idf, ref_strate = focus_refs(tbl)
+    t = tbl.set_index("code_insee")
+    rows = []
+    for code in focus:
+        pop = t.at[code, "population"]
+        for vert, mesure, base in FOCUS_MEASURES:
+            x = dens.at[code, base]
+            rows.append({
+                "code_insee": code, "commune": t.at[code, "nom"], "population": pop,
+                "dans_strate": "oui" if FOCUS_STRATE[0] <= pop <= FOCUS_STRATE[1] else "non",
+                "vertical": vert, "mesure": mesure,
+                "nombre": t.at[code, base],
+                "pour_1000_hab": round(x, 2) if pd.notna(x) else np.nan,
+                "percentile_IDF": percentile(dens.loc[ref_idf, base], x),
+                "percentile_strate": percentile(dens.loc[ref_strate, base], x),
+                "mediane_IDF_pour_1000_hab": round(dens.loc[ref_idf, base].median(), 2),
+                "mediane_strate_pour_1000_hab": round(dens.loc[ref_strate, base].median(), 2),
+            })
+    return pd.DataFrame(rows)
+
+
+def focus_associations(rna: pd.DataFrame | None, communes: pd.DataFrame, focus: list[str]) -> pd.DataFrame:
+    if rna is None:
+        return pd.DataFrame([{"note": "Source RNA indisponible lors de cette exécution (voir feuille sources)."}])
+    sub = rna[rna["code_insee"].isin(focus) & (rna["vertical"] != "other")]
+    parts = [top_associations(sub[sub["vertical"] == v], communes, FOCUS_TOP_N) for v in VERTICALS if v != "other"]
+    out = pd.concat(parts, ignore_index=True)
+    out["_c"] = out["code_insee"].map({c: i for i, c in enumerate(focus)})
+    out["_v"] = out["vertical"].map({v: i for i, v in enumerate(VERTICALS)})
+    out = out.sort_values(["_c", "_v", "rang_dans_commune"]).drop(columns=["_c", "_v"])
+    return out.rename(columns={"rang_dans_commune": "rang_dans_commune_vertical"}).reset_index(drop=True)
+
+
+def focus_vague2(tbl: pd.DataFrame, focus: list[str]) -> pd.DataFrame:
+    """Next-wave candidates: IDF communes outside the focus, population >= VAGUE2_POP_MIN, in the same
+    territory (EPT in the Métropole du Grand Paris, EPCI elsewhere) as a focus city or in the same
+    département; ranked by score_potentiel_RLL, top VAGUE2_TOP_N. A working list, not a choice."""
+    dens = density_frame(tbl)
+    # Top-3 verticals: percentile among IDF communes >= VAGUE2_POP_MIN, not all IDF communes — in the
+    # villages most rare verticals (alumni, gaming, family) are at 0, so any non-zero density would rank high.
+    big = tbl[(tbl["niveau"] == "commune") & (pd.to_numeric(tbl["population"], errors="coerce") >= VAGUE2_POP_MIN)]
+    pct = {base: dens.loc[big["code_insee"], base].dropna() for _, _, base in FOCUS_MEASURES}
+
+    def terr(code):
+        t = TERRITOIRES.get(code)
+        # MGP commune outside every EPT (Paris): no usable territory -> département only
+        return None if t is None or (t["type"] == "EPCI" and t["metropole"]) else t
+
+    t = tbl.set_index("code_insee")
+    focus_terr, focus_dep = {}, {}
+    for code in focus:
+        if terr(code):
+            focus_terr.setdefault(terr(code)["code"], []).append(t.at[code, "nom"])
+        focus_dep.setdefault(t.at[code, "departement"], []).append(t.at[code, "nom"])
+    rows = []
+    com = tbl[(tbl["niveau"] == "commune") & ~tbl["code_insee"].isin(focus)
+              & (pd.to_numeric(tbl["population"], errors="coerce") >= VAGUE2_POP_MIN)]
+    for r in com.itertuples(index=False):
+        tr = terr(r.code_insee)
+        in_terr = tr is not None and tr["code"] in focus_terr
+        in_dep = r.departement in focus_dep
+        if not (in_terr or in_dep):
+            continue
+        critere = " et ".join(([tr["type"]] if in_terr else []) + (["département"] if in_dep else []))
+        liees = focus_terr[tr["code"]] if in_terr else focus_dep[r.departement]
+        verts = sorted(((percentile(pct[f"assos_{v}"], dens.at[r.code_insee, f"assos_{v}"]), v)
+                        for v in VERTICALS if v != "other"), reverse=True)[:3]
+        row = {"code_insee": r.code_insee, "commune": r.nom, "departement": r.departement,
+               "population": r.population,
+               "territoire_type": tr["type"] if tr else "—", "territoire": tr["nom"] if tr else "—",
+               "critere": critere, "villes_focus_liees": ", ".join(liees),
+               "score_potentiel_RLL": r.score_potentiel_RLL, "rang_IDF_score": int(r.rang),
+               "assos_total": r.assos_total,
+               "assos_pour_1000_hab": round(r.assos_per_1k, 2) if pd.notna(r.assos_per_1k) else np.nan}
+        for i, (p, v) in enumerate(verts, 1):
+            x = dens.at[r.code_insee, f"assos_{v}"]
+            row[f"vertical_dense_{i}"] = f"{v} ({x:.2f} pour 1 000 hab., percentile {p:.0f})"
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame([{"note": "Aucune commune candidate avec les critères de focus_vague2."}])
+    out = out.sort_values(["score_potentiel_RLL", "population"], ascending=[False, False],
+                          na_position="last").head(VAGUE2_TOP_N)
+    out.insert(0, "rang_vague2", range(1, len(out) + 1))
+    return out.reset_index(drop=True)
+
+
+def check_focus(communes: pd.DataFrame, focus: list[str]) -> list[str]:
+    """`--focus` values (space- or comma-separated) -> unique IDF commune codes, in the given order."""
+    codes = [c.strip() for f in focus for c in f.split(",") if c.strip()]
+    known = set(communes.loc[communes["niveau"] == "commune", "code_insee"])
+    bad = [c for c in codes if c not in known]
+    if bad:
+        raise SystemExit(f"--focus: code(s) INSEE inconnu(s) ou hors communes IDF : {', '.join(bad)}")
+    return list(dict.fromkeys(codes))
+
+
+def build(workdir: Path, outdir: Path, focus: list[str] | None = None):
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
 
     communes = load_communes(workdir)
+    focus = check_focus(communes, focus or FOCUS_DEFAULT)
     rna = load_rna(workdir)
     inj_commune, inj_fed = load_injep(workdir)
     es = load_data_es(workdir)
@@ -865,6 +1038,15 @@ def build(workdir: Path, outdir: Path):
               f"{r['hors_communes_apres']:.0f} (réaffectés {r['reaffectes']:.0f}) ; restants : "
               f"{r['codes_restants'] or '—'}", file=sys.stderr)
 
+    # --- focus views (G-003): computed from tbl / rna, appended after the existing sheets
+    focus_sheets = {"focus_profil": focus_profil(tbl, focus),
+                    "focus_associations": focus_associations(rna, communes, focus),
+                    "focus_vague2": focus_vague2(tbl, focus)}
+    ref_idf, ref_strate = focus_refs(tbl)
+    FOCUS_INFO.update(focus=focus, noms=[communes.set_index("code_insee").at[c, "nom"] for c in focus],
+                      n_idf=len(ref_idf), n_strate=len(ref_strate),
+                      n_big=int(((tbl["niveau"] == "commune") & (tbl["population"] >= VAGUE2_POP_MIN)).sum()))
+
     xlsx = outdir / f"RLL-IDF-villes-x-verticals-{VERSION}.xlsx"
     with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
         tbl.to_excel(xw, sheet_name="villes_x_verticals", index=False)
@@ -877,6 +1059,8 @@ def build(workdir: Path, outdir: Path):
         remap_report.to_excel(xw, sheet_name="correspondance_communes", index=False)
         remap_detail.to_excel(xw, sheet_name="correspondance_communes", index=False,
                               startrow=len(remap_report) + 3)
+        for k, v in focus_sheets.items():
+            v.to_excel(xw, sheet_name=k, index=False)
         # cosmetic: freeze header, autosize
         for ws in xw.book.worksheets:
             ws.freeze_panes = "A2"
@@ -938,8 +1122,9 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
         "pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de "
         "marché ni une prédiction.",
         "- Biais connus du score (décision 2026-10-01 : score inchangé) : (1) les ratios pour 1 000 habitants placent "
-        "des micro-communes en tête malgré le plafonnement au 99e centile — un seuil de population sera appliqué "
-        "dans la vue « villes suivantes » (G-003) ; (2) les arrondissements centraux de Paris (1er–9e : 8e à ~170 "
+        "des micro-communes en tête malgré le plafonnement au 99e centile — un seuil de population "
+        f"(≥ {VAGUE2_POP_MIN} habitants) est appliqué dans la feuille `focus_vague2` (G-003) ; (2) les "
+        "arrondissements centraux de Paris (1er–9e : 8e à ~170 "
         "et 1er à ~146 associations pour 1 000 habitants, contre ~50 pour Paris entier) sont gonflés par les "
         "sièges sociaux domiciliés (domiciliation, sièges nationaux), qui ne reflètent pas une activité locale.",
         "- Paris figure en une ligne `commune` (75056) plus 20 lignes `arrondissement` (75101–75120) ; le rang n'est "
@@ -965,6 +1150,15 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
         "sont comptées au lieu de résidence du licencié, les clubs au siège du club.",
         "- Data ES : un équipement = une ligne dédoublonnée sur l'identifiant d'équipement ; les lieux de pratique "
         "non bâtis (sentiers, plans d'eau) sont inclus.",
+        f"- Focus (G-003) : {', '.join(f'{n} ({c})' for c, n in zip(FOCUS_INFO['focus'], FOCUS_INFO['noms']))} "
+        f"(option `--focus`). Références des percentiles : {FOCUS_INFO['n_idf']} communes IDF (hors arrondissements, "
+        f"Paris compté une fois) ; strate {FOCUS_STRATE[0]}–{FOCUS_STRATE[1]} habitants : {FOCUS_INFO['n_strate']} "
+        f"communes ; `vertical_dense_*` de `focus_vague2` : {FOCUS_INFO['n_big']} communes de {VAGUE2_POP_MIN} "
+        "habitants ou plus. Méthode : voir la partie rédigée de ce README.",
+        f"- Territoires (feuille `focus_vague2`) : `epci.json` ({TERRITOIRES_SRC['n_epci']} EPCI à fiscalité propre) "
+        f"et `ept.json` ({TERRITOIRES_SRC['n_ept']} établissements publics territoriaux) du paquet "
+        f"@etalab/decoupage-administratif {ETALAB_COG_VERSION} déjà utilisé pour la population : aucune nouvelle "
+        "source. Métropole du Grand Paris → EPT ; Paris, hors EPT → département.",
         "", "## Communes fusionnées — écart avant / après", "",
         "| Source | Total IDF | Hors communes avant | Hors communes après | Réaffectés | Codes restants (non INSEE) |",
         "|---|---|---|---|---|---|"]
@@ -990,7 +1184,7 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
     lines += ["", "## Fichiers", "",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.xlsx` — feuilles : villes_x_verticals, top_associations_sport, "
               "top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, "
-              "correspondance_communes",
+              "correspondance_communes, focus_profil, focus_associations, focus_vague2",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.csv` — feuille principale (séparateur `;`, UTF-8 BOM)",
               "- `build.py` — script de construction", "",
               "## Hôtes requis", "",
@@ -1013,7 +1207,10 @@ if __name__ == "__main__":
     # pipelines/fr-idf/out whether build.py is run from the repo root or from the pipeline folder.
     ap.add_argument("--workdir", default=str(PIPELINE_DIR / "raw"), help="raw downloads (default: pipelines/fr-idf/raw)")
     ap.add_argument("--out", default=str(PIPELINE_DIR / "out"), help="outputs (default: pipelines/fr-idf/out)")
+    ap.add_argument("--focus", nargs="+", default=FOCUS_DEFAULT, metavar="CODE_INSEE",
+                    help="codes INSEE des villes du focus, séparés par des espaces ou des virgules "
+                         f"(défaut : villes pilotes {' '.join(FOCUS_DEFAULT)}) -> feuilles focus_*")
     a = ap.parse_args()
-    tbl, src = build(Path(a.workdir), Path(a.out))
+    tbl, src = build(Path(a.workdir), Path(a.out), a.focus)
     print(src.to_string(), file=sys.stderr)
     print(tbl.head(15).to_string(), file=sys.stderr)
