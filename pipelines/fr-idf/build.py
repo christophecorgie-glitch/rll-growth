@@ -9,12 +9,14 @@ Sources (in order of attempt):
   1. RNA  — Répertoire National des Associations (data.gouv.fr, Licence Ouverte)
   2. INJEP — recensement géocodé des licences et clubs sportifs (data.gouv.fr, LO)
   3. Data ES — recensement des équipements sportifs (data.gouv.fr, LO)
-  4. INSEE populations légales par commune — primary: insee.fr / data.gouv.fr ;
-     fallback: @etalab/decoupage-administratif (npm, Licence Ouverte pour les données)
-     which republishes the INSEE COG + populations légales.
+  4. Communes + populations légales INSEE : @etalab/decoupage-administratif (npm,
+     Licence Ouverte pour les données), republication du COG et des populations de
+     référence INSEE. (L'ancienne source primaire `insee_pop` sur data.gouv.fr a été
+     retirée : son slug n'existe plus et aucun jeu INSEE équivalent n'y est publié.)
 
-Every download is attempted through the environment's HTTPS proxy. A refused /
-blocked download (403 / 407 / connection refused) is logged in the `sources`
+Every download is attempted through the environment's HTTPS proxy. Transient failures
+(connection reset, timeout, HTTP 5xx) are retried up to 4 attempts with exponential
+backoff; a refusal (403 / 407 / 404) is never retried. A failed download is logged in the `sources`
 sheet and README-sources.md and the pipeline continues with what it has.
 Nothing is scraped; no retry through other tools.
 
@@ -27,14 +29,18 @@ Requires: pandas, openpyxl (pip install --break-system-packages pandas openpyxl)
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import io
 import json
 import os
 import re
+import http.client
 import ssl
 import sys
 import tarfile
+import time
+import unicodedata
 import urllib.error
 import urllib.request
 import zipfile
@@ -75,26 +81,24 @@ SOURCES = {
     },
     "data_es": {
         "label": "Data ES — Recensement des équipements sportifs et lieux de pratique (complet)",
-        "dataset_url": "https://www.data.gouv.fr/fr/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/",
-        "api_url": "https://www.data.gouv.fr/api/1/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/",
+        "dataset_url": "https://www.data.gouv.fr/fr/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet-1/",
+        "api_url": "https://www.data.gouv.fr/api/1/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet-1/",
         "licence": "Licence Ouverte / Open Licence 2.0 (Etalab)",
         "producer": "Ministère chargé des Sports",
     },
-    "insee_pop": {
-        "label": "INSEE — Populations légales par commune (fichier national)",
-        "dataset_url": "https://www.insee.fr/fr/statistiques/8680726",
-        "api_url": "https://www.data.gouv.fr/api/1/datasets/populations-legales-communes-et-arrondissements-municipaux-france-depuis-1876/",
-        "licence": "Licence Ouverte / Open Licence 2.0 (Etalab)",
-        "producer": "INSEE",
-    },
     "etalab_cog": {
-        "label": "@etalab/decoupage-administratif (npm) — COG + populations légales INSEE republiés",
+        "label": "@etalab/decoupage-administratif (npm) — COG + populations légales INSEE republiés (source de population)",
         "dataset_url": "https://www.npmjs.com/package/@etalab/decoupage-administratif",
         "api_url": "https://registry.npmjs.org/@etalab/decoupage-administratif",
         "licence": "Données : Licence Ouverte (Etalab) — code : MIT",
         "producer": "Etalab / DINUM (republication de l'INSEE)",
     },
 }
+
+# INSEE population millésime bundled in each @etalab/decoupage-administratif release
+# (package README, « Sources » -> insee.fr/fr/statistiques/8680726 = populations de
+# référence 2023, en vigueur au 1er janvier 2026). Extend when the package is bumped.
+ETALAB_POP_MILLESIME = {"6.0.0": "2023"}
 
 # --------------------------------------------------------------------------- #
 # RNA Waldec "objet social" families -> RLL verticals
@@ -191,7 +195,8 @@ LOG: list[dict] = []          # one entry per source attempt -> `sources` sheet
 NOTES: list[str] = []         # free-text caveats -> README
 
 
-def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licence=None, date=None):
+def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licence=None, date=None,
+               millesime=""):
     meta = SOURCES.get(key, {})
     LOG.append({
         "source_key": key,
@@ -200,6 +205,7 @@ def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licen
         "url": url,
         "licence": licence or meta.get("licence", ""),
         "download_date": date or TODAY,
+        "millesime": millesime,
         "status": status,
         "rows_raw": rows_raw,
         "rows_kept_idf": rows_kept,
@@ -208,21 +214,53 @@ def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licen
     print(f"[{status}] {key}: {url} — {detail}", file=sys.stderr)
 
 
-def fetch(url: str, dest: Path | None = None, timeout=180) -> bytes | Path:
-    """GET through the environment proxy; raise urllib.error.* on failure."""
+FETCH_ATTEMPTS = 4
+FETCH_TIMEOUT = 300   # seconds per socket operation (not total): a 410 MB zip streams in 1 MB reads
+
+
+def _retryable(e: BaseException) -> bool:
+    """Connection reset / timeout / HTTP 5xx only. Never 4xx, never a proxy refusal."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code >= 500
+    if isinstance(e, urllib.error.URLError):
+        reason = str(e.reason)
+        if re.search(r"\b40[0-9]\b", reason):      # e.g. "Tunnel connection failed: 403 Forbidden"
+            return False
+        return isinstance(e.reason, (ConnectionError, TimeoutError, ssl.SSLError, OSError))
+    return isinstance(e, (ConnectionError, TimeoutError, ssl.SSLError, http.client.IncompleteRead,
+                          http.client.RemoteDisconnected))
+
+
+def _fetch_once(url: str, dest: Path | None, timeout: int) -> bytes | Path:
     ctx = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)
     req = urllib.request.Request(url, headers={"User-Agent": "rll-opendata-build/0.1"})
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
         if dest is None:
             return r.read()
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as f:
+        part = dest.with_name(dest.name + ".part")   # never leave a truncated file under `dest`
+        with open(part, "wb") as f:
             while True:
                 chunk = r.read(1 << 20)
                 if not chunk:
                     break
                 f.write(chunk)
+        part.replace(dest)
         return dest
+
+
+def fetch(url: str, dest: Path | None = None, timeout=FETCH_TIMEOUT) -> bytes | Path:
+    """GET through the environment proxy, retrying transient failures; raise on failure."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return _fetch_once(url, dest, timeout)
+        except Exception as e:  # noqa: BLE001
+            if attempt == FETCH_ATTEMPTS or not _retryable(e):
+                raise
+            wait = 2 ** attempt
+            print(f"[retry {attempt}/{FETCH_ATTEMPTS - 1}] {url}: {type(e).__name__}: {e} — waiting {wait}s",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 def try_fetch(key, url, dest=None):
@@ -242,9 +280,10 @@ def is_idf_code(s: pd.Series) -> pd.Series:
 
 
 def pick_resource(api_json: dict, pattern: str, fmt=None):
-    """Newest resource whose title/url matches `pattern`."""
+    """Newest resource whose title matches `pattern` (the URL is not searched: data.gouv URLs
+    embed the dataset slug, e.g. '...licences-et-clubs...', which would match every resource)."""
     res = [r for r in api_json.get("resources", [])
-           if re.search(pattern, (r.get("title") or "") + " " + (r.get("url") or ""), re.I)
+           if re.search(pattern, r.get("title") or "", re.I)
            and (fmt is None or (r.get("format") or "").lower() == fmt)]
     res.sort(key=lambda r: r.get("last_modified") or "", reverse=True)
     return res[0] if res else None
@@ -255,33 +294,7 @@ def pick_resource(api_json: dict, pattern: str, fmt=None):
 # --------------------------------------------------------------------------- #
 def load_communes(workdir: Path) -> pd.DataFrame:
     """Return DataFrame: code_insee, nom, departement, population, niveau, commune_parent."""
-    # 4a. Primary: INSEE / data.gouv national file.
-    api = try_fetch("insee_pop", SOURCES["insee_pop"]["api_url"])
-    if api:
-        try:
-            j = json.loads(api)
-            r = pick_resource(j, r"commune", fmt="csv") or pick_resource(j, r"commune")
-            if r:
-                raw = try_fetch("insee_pop", r["url"], workdir / "insee_pop.bin")
-                if raw:
-                    df = pd.read_csv(raw, sep=None, engine="python", dtype=str)
-                    cols = {c.lower(): c for c in df.columns}
-                    code = next(cols[c] for c in cols if c in ("codgeo", "code_insee", "com", "code"))
-                    nom = next(cols[c] for c in cols if c in ("libgeo", "nom", "libelle", "nom_commune"))
-                    pop = next(cols[c] for c in cols if "pmun" in c or "population" in c)
-                    out = df[[code, nom, pop]].rename(columns={code: "code_insee", nom: "nom", pop: "population"})
-                    out = out[is_idf_code(out["code_insee"])].copy()
-                    out["population"] = pd.to_numeric(out["population"], errors="coerce")
-                    out["departement"] = out["code_insee"].str[:2]
-                    out["niveau"] = np.where(out["code_insee"].str.startswith("751"), "arrondissement", "commune")
-                    out["commune_parent"] = np.where(out["niveau"] == "arrondissement", "75056", out["code_insee"])
-                    log_source("insee_pop", r["url"], "OK", rows_raw=len(df), rows_kept=len(out),
-                               detail=r.get("title", ""))
-                    return out
-        except Exception as e:  # noqa: BLE001
-            log_source("insee_pop", SOURCES["insee_pop"]["api_url"], "FAILED", detail=f"parse error: {e}")
-
-    # 4b. Fallback: etalab npm package (republication of INSEE COG + populations légales).
+    # etalab npm package (republication of INSEE COG + populations légales) — the population source.
     tgz = workdir / "decoupage.tgz"
     meta = try_fetch("etalab_cog", SOURCES["etalab_cog"]["api_url"])
     if not meta:
@@ -311,13 +324,15 @@ def load_communes(workdir: Path) -> pd.DataFrame:
             "codes_postaux": "|".join(c.get("codesPostaux", [])),
         })
     out = pd.DataFrame(rows)
+    pop_year = ETALAB_POP_MILLESIME.get(ver)
+    pop_txt = (f"populations de référence INSEE {pop_year} (insee.fr/fr/statistiques/8680726)" if pop_year
+               else "millésime INSEE à vérifier dans le README du package (version non répertoriée)")
     log_source("etalab_cog", tarball, "OK", rows_raw=len(communes), rows_kept=len(out),
-               detail=f"package {ver} published {pub}; population = INSEE populations légales "
-                      f"bundled in that release (see package README « Millésimes »)",
-               date=TODAY)
-    NOTES.append(f"Population: INSEE populations légales as republished in @etalab/decoupage-administratif "
-                 f"{ver} (published {pub}). The exact INSEE millésime is the one referenced in the package "
-                 f"README (insee.fr/fr/statistiques/8680726); verify before quoting a year.")
+               detail=f"package {ver} published {pub}; population = {pop_txt}; remplace l'ancienne source "
+                      f"insee_pop (data.gouv.fr, slug disparu)",
+               date=TODAY, millesime=f"COG {pub[:4]} ; population {pop_year or '?'}")
+    NOTES.append(f"Population : {pop_txt}, republiées dans @etalab/decoupage-administratif {ver} (publié {pub}). "
+                 f"Cette source remplace l'ancienne source primaire insee_pop (data.gouv.fr), retirée.")
     return out
 
 
@@ -366,9 +381,11 @@ def load_rna(workdir: Path) -> pd.DataFrame | None:
             if not name.lower().endswith(".csv"):
                 continue
             with z.open(name) as f:
-                for chunk in pd.read_csv(f, sep=";", dtype=str, encoding="latin-1",
+                # Waldec files (2026): UTF-8 with BOM, every field double-quoted, ';' separator.
+                # Default quoting is required (free-text `objet` contains ';' and newlines).
+                for chunk in pd.read_csv(f, sep=";", dtype=str, encoding="utf-8-sig",
                                          usecols=lambda c: c in RNA_USECOLS,
-                                         chunksize=200_000, quoting=3, on_bad_lines="skip"):
+                                         chunksize=200_000, on_bad_lines="skip"):
                     raw_total += len(chunk)
                     cp = chunk.get("adrs_codepostal", pd.Series(index=chunk.index, dtype=str))
                     ci = chunk.get("adrs_codeinsee", pd.Series(index=chunk.index, dtype=str))
@@ -381,22 +398,43 @@ def load_rna(workdir: Path) -> pd.DataFrame | None:
     df = df[df["code_insee"].str.len() == 5].copy()
     df["famille_objet"] = df["objet_social1"].fillna("").str.strip().str[:3]
     df["vertical"] = classify_vertical(df["famille_objet"], df["titre"].fillna("") + " " + df["objet"].fillna(""))
+    stamp = re.search(r"(\d{8})", r.get("title", "") + r.get("url", ""))
     log_source(key, r["url"], "OK", rows_raw=raw_total, rows_kept=len(df),
-               detail=f"{r.get('title','')} — filtered position='A' and IDF code INSEE/CP; "
-                      f"last_modified {str(r.get('last_modified',''))[:10]}")
+               detail=f"{r.get('title','')} — filtered position='A' and IDF code INSEE; "
+                      f"last_modified {str(r.get('last_modified',''))[:10]}",
+               millesime=f"extraction du {stamp.group(1)[:4]}-{stamp.group(1)[4:6]}-{stamp.group(1)[6:]}"
+               if stamp else "")
+    if key == "rna":
+        log_source("rna_agrege", SOURCES["rna_agrege"]["api_url"], "NOT_USED",
+                   detail="fallback non sollicité : le fichier Waldec principal a été lu")
     return df
 
 
 # --------------------------------------------------------------------------- #
 # 2. INJEP licences & clubs
 # --------------------------------------------------------------------------- #
+def _norm(col: str) -> str:
+    """'Numéro de l'équipement sportif' -> 'numero_de_l_equipement_sportif'."""
+    s = unicodedata.normalize("NFKD", str(col)).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+
+
 def _find(cols, *cands):
-    low = {c.lower(): c for c in cols}
+    low = {_norm(c): c for c in cols}
     for c in cands:
         for k, orig in low.items():
             if re.fullmatch(c, k):
                 return orig
     return None
+
+
+def _header(path: Path):
+    """(separator, column names) from the first line, without loading the file."""
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        line = f.readline()
+    sep = max((";", ",", "\t", "|"), key=line.count)
+    cols = next(csv.reader([line.rstrip("\r\n")], delimiter=sep))
+    return sep, cols
 
 
 def load_injep(workdir: Path):
@@ -405,45 +443,46 @@ def load_injep(workdir: Path):
     if not api:
         return None, None
     j = json.loads(api)
-    lic = pick_resource(j, r"lic", fmt="csv") or pick_resource(j, r"licen")
-    clubs = pick_resource(j, r"club", fmt="csv") or pick_resource(j, r"club")
+    lic = pick_resource(j, r"^lic", fmt="csv") or pick_resource(j, r"licen", fmt="csv")
+    clubs = pick_resource(j, r"^clubs?-data", fmt="csv") or pick_resource(j, r"club", fmt="csv")
     per_commune, per_fed = None, None
     frames = {}
+    # value column per file: licences -> 'Total' (all ages/sexes); clubs -> 'Clubs' (affiliated clubs,
+    # excluding EPA = établissements professionnels agréés, counted separately in the source).
+    value_cands = {"licences": (r"l_\d{4}", r"total", r"nb_licences?", r"licences?"),
+                   "clubs": (r"c_\d{4}", r"clubs", r"nb_clubs?", r"total")}
     for kind, r in (("licences", lic), ("clubs", clubs)):
         if not r:
             continue
         p = workdir / f"injep_{kind}.csv"
         if not p.exists() and not try_fetch("injep", r["url"], p):
             continue
-        parts = []
-        raw = 0
-        for chunk in pd.read_csv(p, sep=None, engine="python", dtype=str, chunksize=200_000):
+        sep, cols = _header(p)
+        code = _find(cols, r"code_commune", r"codgeo", r"code_insee", r"com_code", r"insee.*")
+        dep = _find(cols, r"dep_code", r"code_dep.*", r"departement_code", r"departement")
+        fed = _find(cols, r"federation", r"fed_libelle", r"fede.*", r"nom_fed.*")
+        fedcode = _find(cols, r"fed_code", r"code_fed.*", r"code")
+        val = _find(cols, *value_cands[kind])
+        if code is None or val is None:
+            log_source("injep", r["url"], "FAILED",
+                       detail=f"column not recognised (commune={code}, valeur={val}) in {cols[:12]}")
+            continue
+        usecols = [c for c in dict.fromkeys((code, dep, fedcode, fed, val)) if c]  # only what is needed
+        parts, raw = [], 0
+        for chunk in pd.read_csv(p, sep=sep, dtype=str, encoding="utf-8-sig", usecols=usecols,
+                                 chunksize=200_000):
             raw += len(chunk)
-            code = _find(chunk.columns, r"code_commune", r"codgeo", r"insee.*", r"code_insee", r"com_code")
-            dep = _find(chunk.columns, r"dep_code", r"code_dep.*", r"departement_code")
-            if code is None:
-                break
-            m = is_idf_code(chunk[code].fillna("")) if dep is None else chunk[dep].astype(str).isin(IDF_DEPS)
+            m = is_idf_code(chunk[code].fillna("")) if dep is None else \
+                chunk[dep].fillna("").str.strip().str.zfill(2).isin(IDF_DEPS)
             parts.append(chunk[m])
-        if not parts:
-            log_source("injep", r["url"], "FAILED", rows_raw=raw, detail="commune column not recognised")
-            continue
         df = pd.concat(parts, ignore_index=True)
-        code = _find(df.columns, r"code_commune", r"codgeo", r"insee.*", r"code_insee", r"com_code")
-        fed = _find(df.columns, r"federation", r"fed_libelle", r"fede.*", r"nom_fed.*")
-        fedcode = _find(df.columns, r"fed_code", r"code_fed.*")
-        # value column: the yearly total (e.g. l_2022 / total / clubs / nb_licences)
-        valcols = [c for c in df.columns if re.fullmatch(r"(l|c)_\d{4}|total.*|nb_.*|licences?|clubs?", c.lower())]
-        val = valcols[-1] if valcols else None
-        if val is None:
-            log_source("injep", r["url"], "FAILED", rows_raw=raw, detail="value column not recognised")
-            continue
         df[val] = pd.to_numeric(df[val], errors="coerce").fillna(0)
-        df["code_insee"] = df[code].astype(str).str.zfill(5)
+        df["code_insee"] = df[code].astype(str).str.strip().str.zfill(5)
         year = re.search(r"\d{4}", val) or re.search(r"\d{4}", r.get("title", ""))
         frames[kind] = (df, val, fed, fedcode, year.group(0) if year else "?")
         log_source("injep", r["url"], "OK", rows_raw=raw, rows_kept=len(df),
-                   detail=f"{r.get('title','')} — value column '{val}'")
+                   detail=f"{r.get('title','')} — colonnes lues {usecols}, valeur '{val}'",
+                   millesime=year.group(0) if year else "")
     if not frames:
         return None, None
     pc = None
@@ -473,25 +512,27 @@ def load_data_es(workdir: Path):
     p = workdir / "data_es.csv"
     if not p.exists() and not try_fetch("data_es", r["url"], p):
         return None
-    parts, raw = [], 0
-    for chunk in pd.read_csv(p, sep=None, engine="python", dtype=str, chunksize=100_000, on_bad_lines="skip"):
-        raw += len(chunk)
-        code = _find(chunk.columns, r"cominsee", r"com_insee", r"inst_com_code", r"code_insee", r"insee.*")
-        eq = _find(chunk.columns, r"equipementid", r"equ_id", r"id_equipement", r"numero.*equip.*")
-        if code is None:
-            break
-        m = is_idf_code(chunk[code].fillna(""))
-        sub = chunk.loc[m, [code] + ([eq] if eq else [])].rename(columns={code: "code_insee"})
-        parts.append(sub)
-    if not parts:
-        log_source("data_es", r["url"], "FAILED", rows_raw=raw, detail="commune column not recognised")
+    sep, cols = _header(p)
+    code = _find(cols, r"commune_insee", r"cominsee", r"com_insee", r"inst_com_code", r"code_insee", r"insee.*")
+    eq = _find(cols, r"numero_de_l_equipement_sportif", r"equipementid", r"equ_id", r"id_equipement",
+               r"numero.*equip.*")
+    if code is None:
+        log_source("data_es", r["url"], "FAILED", detail=f"commune column not recognised in {cols[:12]}")
         return None
+    parts, raw = [], 0
+    for chunk in pd.read_csv(p, sep=sep, dtype=str, encoding="utf-8-sig", usecols=[c for c in (code, eq) if c],
+                             chunksize=200_000, on_bad_lines="skip"):
+        raw += len(chunk)
+        m = is_idf_code(chunk[code].fillna(""))
+        parts.append(chunk.loc[m].rename(columns={code: "code_insee"}))
     df = pd.concat(parts, ignore_index=True)
     eqcol = [c for c in df.columns if c != "code_insee"]
     if eqcol:
         df = df.drop_duplicates(subset=eqcol)
     g = df.groupby("code_insee").size().rename("equipements").reset_index()
-    log_source("data_es", r["url"], "OK", rows_raw=raw, rows_kept=len(df), detail=r.get("title", ""))
+    log_source("data_es", r["url"], "OK", rows_raw=raw, rows_kept=len(df),
+               detail=f"{r.get('title', '')} — colonnes lues {[c for c in (code, eq) if c]}",
+               millesime=f"export du {str(r.get('last_modified', ''))[:10]}")
     return g
 
 
@@ -669,20 +710,20 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
              "Aucune donnée personnelle de personne physique dans les sorties (colonnes RNA nominatives jamais chargées ; "
              "champ `objet` libre non exporté).", "",
              "## Sources tentées (ordre d'essai) et résultat", ""]
-    lines.append("| # | Source | URL | Licence | Date | Statut | Lignes brutes | Lignes IDF conservées | Détail |")
-    lines.append("|---|---|---|---|---|---|---|---|---|")
+    lines.append("| # | Source | URL | Licence | Date | Millésime | Statut | Lignes brutes | Lignes IDF conservées | Détail |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for i, r in sources.iterrows():
-        lines.append(f"| {i+1} | {r['source']} | {r['url']} | {r['licence']} | {r['download_date']} | **{r['status']}** | "
+        lines.append(f"| {i+1} | {r['source']} | {r['url']} | {r['licence']} | {r['download_date']} | {r['millesime']} | **{r['status']}** | "
                      f"{'' if pd.isna(r['rows_raw']) else int(r['rows_raw'])} | "
                      f"{'' if pd.isna(r['rows_kept_idf']) else int(r['rows_kept_idf'])} | {r['detail']} |")
     lines += ["", "## Notes et réserves", ""]
     for n in NOTES:
         lines.append(f"- {n}")
-    failed = sources[sources["status"] != "OK"]["source_key"].unique().tolist()
+    failed = sources[sources["status"] == "FAILED"]["source_key"].unique().tolist()
     if failed:
         lines.append(f"- Sources refusées par le proxy de sortie (403 sur CONNECT, politique d'organisation) ou "
                      f"inaccessibles lors de cette exécution : {', '.join(failed)}. Les colonnes correspondantes sont "
-                     f"vides ; relancer `build.py` depuis un poste ayant accès à data.gouv.fr / insee.fr les remplit sans "
+                     f"vides ; relancer `build.py` depuis un poste ayant accès aux hôtes listés les remplit sans "
                      f"autre modification.")
     lines += [
         "- Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, "
