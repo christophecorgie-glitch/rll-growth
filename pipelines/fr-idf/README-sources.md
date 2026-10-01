@@ -1,28 +1,33 @@
 # RLL — IDF villes × verticals v0.1 — sources & méthode
 
-Généré le 2026-09-30 par `build.py` (reproductible : `python3 build.py`).
+Généré le 2026-10-01 par `build.py` (reproductible : `python3 build.py`).
 
 Périmètre : Île-de-France (75, 77, 78, 91, 92, 93, 94, 95). Données ouvertes françaises uniquement. Aucune donnée personnelle de personne physique dans les sorties (colonnes RNA nominatives jamais chargées ; champ `objet` libre non exporté).
 
 ## Source de population (décision 2026-10-01)
 
-La population vient de **@etalab/decoupage-administratif 6.0.0** (npm, données sous Licence Ouverte) : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726. Elle remplace l'ancienne source primaire `insee_pop` (fichier INSEE des populations légales via data.gouv.fr), retirée du catalogue `SOURCES` : le paquet etalab republie le même fichier INSEE et porte aussi le COG. Version épinglée dans `build.py` (`ETALAB_COG_VERSION`).
+La population vient de **@etalab/decoupage-administratif 6.0.0** (npm, données sous Licence Ouverte) : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726. Elle remplace l'ancienne source primaire `insee_pop` (fichier INSEE des populations légales via data.gouv.fr), retirée du catalogue `SOURCES` : le paquet etalab republie le même fichier INSEE et porte aussi le COG (communes, arrondissements municipaux, codes postaux), ce qui évite une seconde jointure. La version du paquet est épinglée dans `build.py` (`ETALAB_COG_VERSION`) pour que le millésime annoncé reste exact ; changer de version impose de vérifier la section « Millésimes et versions de package » du README du paquet.
+
+## Téléchargements
+
+Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de connexion, timeout et HTTP 5xx : jusqu'à 4 tentatives avec délai exponentiel (5 s, 10 s, 20 s), reprise du fichier partiel par `Range` quand le serveur l'accepte. 403 et 404 ne sont jamais retentés. Délai d'attente par opération réseau : 60 s (API) / 300 s (fichiers) — il borne chaque lecture, pas la durée totale, d'où un zip RNA de ~410 Mo téléchargeable sans plafond global.
 
 ## Sources tentées (ordre d'essai) et résultat
 
 | # | Source | URL | Licence | Date | Statut | Lignes brutes | Lignes IDF conservées | Détail |
 |---|---|---|---|---|---|---|---|---|
-| 1 | INSEE — Populations légales par commune (fichier national) | https://www.data.gouv.fr/api/1/datasets/populations-legales-communes-et-arrondissements-municipaux-france-depuis-1876/ | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-09-30 | **FAILED** |  |  | blocked / unreachable: Tunnel connection failed: 403 Forbidden |
-| 2 | @etalab/decoupage-administratif (npm) — COG + populations légales INSEE republiés | https://registry.npmjs.org/@etalab/decoupage-administratif/-/decoupage-administratif-6.0.0.tgz | Données : Licence Ouverte (Etalab) — code : MIT | 2026-09-30 | **OK** | 37590 | 1286 | package 6.0.0 published 2026-03-09; population = INSEE populations légales bundled in that release (see package README « Millésimes ») |
-| 3 | RNA — Répertoire National des Associations (fichier Waldec mensuel) | https://www.data.gouv.fr/api/1/datasets/repertoire-national-des-associations/ | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-09-30 | **FAILED** |  |  | blocked / unreachable: Tunnel connection failed: 403 Forbidden |
-| 4 | RNA agrégé à l'échelle nationale (fallback) | https://www.data.gouv.fr/api/1/datasets/rna-agrege-a-lechelle-nationale/ | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-09-30 | **FAILED** |  |  | blocked / unreachable: Tunnel connection failed: 403 Forbidden |
-| 5 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://www.data.gouv.fr/api/1/datasets/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/ | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-09-30 | **FAILED** |  |  | blocked / unreachable: Tunnel connection failed: 403 Forbidden |
-| 6 | Data ES — Recensement des équipements sportifs et lieux de pratique (complet) | https://www.data.gouv.fr/api/1/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/ | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-09-30 | **FAILED** |  |  | blocked / unreachable: Tunnel connection failed: 403 Forbidden |
+| 1 | INSEE — Populations légales par commune (fichier national) | https://www.insee.fr/fr/statistiques/8680726 | Licence Ouverte / Open Licence 2.0 (Etalab) |  | **RETIRÉE** |  |  | Source retirée le 2026-10-01, remplacée par etalab_cog (6.0.0) qui republie le même fichier INSEE : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726. Non téléchargée. |
+| 2 | @etalab/decoupage-administratif (npm) — COG + populations de référence INSEE republiés (source de population) | https://registry.npmjs.org/@etalab/decoupage-administratif/-/decoupage-administratif-6.0.0.tgz | Données : Licence Ouverte (Etalab) — code : MIT | 2026-10-01 | **OK** | 37590 | 1286 | package 6.0.0 (publié le 2026-03-09) ; population = populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726 |
+| 3 | RNA — Répertoire National des Associations (fichier Waldec mensuel) | https://media.interieur.gouv.fr/rna/rna_waldec_20261001.zip | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 2314908 | 331435 | rna_waldec_20261001.zip — filtered position='A' and IDF code INSEE/CP; last_modified 2026-09-30 |
+| 4 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163107/lic-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 1014746 | 73285 | lic-data-2023.csv — value column 'Total' |
+| 5 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163249/clubs-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 121700 | 12697 | clubs-data-2023.csv — value column 'Clubs' |
+| 6 | Data ES — Recensement des équipements sportifs et lieux de pratique (complet) | https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/exports/csv?use_labels=true | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-01 | **OK** | 333720 | 30070 | data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet.csv |
 
 ## Notes et réserves
 
-- Population: INSEE populations légales as republished in @etalab/decoupage-administratif 6.0.0 (published 2026-03-09). The exact INSEE millésime is the one referenced in the package README (insee.fr/fr/statistiques/8680726); verify before quoting a year.
-- Sources refusées par le proxy de sortie (403 sur CONNECT, politique d'organisation) ou inaccessibles lors de cette exécution : insee_pop, rna, rna_agrege, injep, data_es. Les colonnes correspondantes sont vides ; relancer `build.py` depuis un poste ayant accès à data.gouv.fr / insee.fr les remplit sans autre modification.
+- Population : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726, telles que republiées par @etalab/decoupage-administratif 6.0.0 (publié le 2026-03-09, version épinglée dans build.py). Cette source remplace l'ancienne source primaire `insee_pop` (fichier INSEE via data.gouv.fr), retirée le 2026-10-01.
+- INJEP licences: year 2023 (latest available in the dataset at build time).
+- INJEP clubs: year 2023 (latest available in the dataset at build time).
 - Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de marché ni une prédiction.
 - Paris figure en une ligne `commune` (75056) plus 20 lignes `arrondissement` (75101–75120) ; le rang n'est attribué qu'aux communes.
 - RNA : seules les associations `position = A` (actives) avec un code INSEE de commune IDF sont comptées ; le champ `adrs_codeinsee` peut être vide/obsolète pour des associations anciennes (sous-estimation possible). Le fichier Waldec ne couvre pas l'Alsace-Moselle (hors périmètre ici).
@@ -81,19 +86,6 @@ Règles par mots-clés (appliquées après le mapping par famille) :
 - `RLL-IDF-villes-x-verticals-v0.1.csv` — feuille principale (séparateur `;`, UTF-8 BOM)
 - `build.py` — script de construction
 
-## Contexte d'exécution (2026-09-30)
+## Hôtes requis
 
-- Hôtes refusés par la politique d'egress de la session (403 sur CONNECT, aucun contournement tenté) :
-  `www.data.gouv.fr`, `static.data.gouv.fr`, `object.files.data.gouv.fr`, `files.data.gouv.fr`, `tabular-api.data.gouv.fr`,
-  `www.insee.fr`, `api.insee.fr`, `data.iledefrance.fr`, `equipements.sports.gouv.fr`, `www.sports.gouv.fr`, `injep.fr`,
-  `geo.api.gouv.fr`, `opendata.paris.fr`, `*.opendatasoft.com`, `huggingface.co`, `unpkg.com`, `cdn.jsdelivr.net`.
-  Hôtes joignables : `registry.npmjs.org`, `pypi.org`, `raw.githubusercontent.com` (aucune copie du RNA / INJEP / Data ES
-  n'y est connue, donc rien d'autre n'a été récupéré).
-- Conséquence : dans cette v0.1, seule l'ossature communes + population est renseignée. Les colonnes `assos_*`,
-  `clubs_sport`, `licences_sport`, `equipements_sportifs`, les ratios et `score_potentiel_RLL` sont vides, et les feuilles
-  `top_associations_*` / `federations_idf` ne contiennent qu'une note. Le tri actuel est donc **par population**.
-- Les branches RNA / INJEP / Data ES de `build.py` (lecture en chunks, filtre IDF, mapping, agrégats, roll-up Paris) ont été
-  validées sur des fixtures synthétiques, pas sur les fichiers réels : la détection des noms de colonnes est heuristique
-  (`_find`, `RNA_USECOLS`, `valcols`) et peut nécessiter un ajustement au premier run avec accès réseau.
-- Aucune donnée personnelle : `dir_civilite`, `adrg_*`, `siteweb`, `observation` du RNA ne sont jamais lus ; le champ libre
-  `objet` sert au mapping mais n'est pas exporté dans les feuilles `top_associations_*`.
+`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA Waldec), `data.education.gouv.fr` (exports Data ES), `data-pipeline-open.s3.sbg.io.cloud.ovh.net`, `registry.npmjs.org` (paquet etalab).
