@@ -10,6 +10,65 @@ brutes vont dans `raw/` (ignoré par git), chacune avec un fichier `<nom>.source
 téléchargement) : un fichier déjà présent dans `raw/` est relu tel quel, et la feuille `sources` indique alors
 « cache local raw/ » avec sa date de téléchargement réelle.
 
+## Focus villes pilotes (G-003) — option `--focus` et feuilles `focus_*`
+
+`python3 pipelines/fr-idf/build.py --focus 91312 91477 91645 92060` (codes INSEE séparés par des espaces ou des
+virgules). Valeur par défaut : les 4 villes pilotes — Igny (91312), Palaiseau (91477), Verrières-le-Buisson (91645),
+Le Plessis-Robinson (92060). Un code qui n'est pas une commune IDF arrête le build avant tout calcul (les
+arrondissements de Paris sont refusés).
+
+Les trois feuilles sont des **vues** sur la table `villes_x_verticals` et sur les associations RNA déjà chargées :
+elles ne téléchargent rien de plus (les EPCI/EPT viennent des fichiers `epci.json` et `ept.json` du paquet
+@etalab/decoupage-administratif 6.0.0, déjà source de la population) et ne modifient ni le score, ni les autres
+feuilles, ni le CSV. Elles sont ajoutées après les feuilles existantes. Les seuils sont des constantes en tête de
+`build.py` (`FOCUS_STRATE`, `FOCUS_TOP_N`, `VAGUE2_POP_MIN`, `VAGUE2_TOP_N`).
+
+**Références de comparaison.**
+- *IDF* : toutes les communes IDF de niveau `commune` (arrondissements exclus, Paris compté une fois en 75056).
+- *Strate* : parmi elles, les communes de 10 000 à 40 000 habitants (population municipale, bornes incluses).
+  Les 4 villes pilotes y sont toutes (Igny ~10 800 hab. est proche de la borne basse) ; la colonne `dans_strate`
+  le signale pour un focus différent.
+- *Percentile* : rang moyen, 0–100 = part des communes de la référence dont la densité est strictement inférieure,
+  plus la moitié des ex aequo (les nombreuses communes à 0 association d'un vertical se partagent donc le même
+  percentile, et une ville à 0 n'est pas au percentile 0). Une densité est un nombre pour 1 000 habitants.
+
+**`focus_profil`** — une ligne par ville × mesure, au format long (choisi plutôt que des colonnes pour garder les
+mêmes colonnes de comparaison sur chaque ligne et pouvoir filtrer/trier) :
+- `vertical` = `total` (toutes associations), puis les 11 verticals RLL (dont `other`), puis deux lignes sport hors
+  RNA : `sport_licences` (licences INJEP, au lieu de résidence du licencié) et `sport_equipements` (équipements
+  Data ES) ;
+- `mesure` dit ce qui est compté ; `nombre` et `pour_1000_hab` sont donc le nombre d'associations et les
+  associations pour 1 000 habitants sur les lignes RNA, et le nombre de licences / d'équipements (et leur densité)
+  sur les deux lignes sport ;
+- `percentile_IDF`, `percentile_strate`, `mediane_IDF_pour_1000_hab`, `mediane_strate_pour_1000_hab` : position de
+  la ville et médianes des deux références, pour la même mesure.
+
+**`focus_associations`** — pour chaque ville du focus et chaque vertical sauf `other`, les 10 associations les plus
+structurées, avec exactement le critère et les colonnes des feuilles `top_associations_*` (fédération puis union,
+reconnaissance d'utilité publique, SIRET renseigné, ancienneté, puis numéro RNA). Personne morale uniquement :
+`rna_id`, dénomination, code et famille Waldec, vertical, groupement, RUP oui/non, SIRET renseigné oui/non, date de
+création. Le rang (`rang_dans_commune_vertical`) est calculé par ville × vertical. Un vertical a moins de 10 lignes
+quand la ville a moins de 10 associations actives dans ce vertical.
+
+**`focus_vague2`** — liste de travail pour la vague suivante (le choix des villes revient à Christophe) :
+- candidates : communes IDF hors focus, hors arrondissements, **population ≥ 5 000 habitants** (seuil qui neutralise
+  le biais « micro-communes » du score sans le modifier) ;
+- situées dans le même territoire qu'une ville du focus **ou** dans le même département ; `critere` indique lequel
+  s'applique (`EPCI`, `EPT`, `département`, ou les deux, ex. `EPCI et département`), `villes_focus_liees` avec
+  quelle(s) ville(s) du focus ;
+- territoire : l'EPCI à fiscalité propre, sauf dans la **Métropole du Grand Paris** (130 communes, trop large pour
+  dire « voisine ») où l'on prend l'**établissement public territorial** (EPT, disponible dans
+  decoupage-administratif 6.0.0, `ept.json`). Paris n'appartient à aucun EPT : pour Paris, seul le critère
+  département joue ;
+- classement par `score_potentiel_RLL` (inchangé ; à égalité, population décroissante), 15 premières ;
+- `vertical_dense_1..3` : les 3 verticals (hors `other`) où la commune a le **percentile** de densité
+  d'associations le plus élevé, calculé parmi les communes IDF de 5 000 habitants ou plus (la population des
+  candidates). C'est une densité relative aux autres communes : en valeur brute pour 1 000 habitants, `asso` et
+  `sport` arriveraient en tête partout. La référence n'est pas « toutes les communes IDF » : dans les villages, les
+  verticals rares (alumni, gaming, family) sont presque toujours à 0 (75 % des communes IDF pour alumni), si bien
+  qu'une seule association de ce type suffirait à placer le vertical en tête ; au-delà de 5 000 habitants, la part
+  de zéros tombe à 38 % pour alumni, 20 % pour gaming, 11 % pour family et ~0 % pour les autres.
+
 <!-- BEGIN GENERATED: build.py -->
 # RLL — IDF villes × verticals v0.1 — sources & méthode
 
