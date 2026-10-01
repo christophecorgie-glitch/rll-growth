@@ -142,6 +142,7 @@ WALDEC_FAMILY_LABELS = {
     "030": "Domaines divers",
     "032": "Activités religieuses, spirituelles ou philosophiques",
     "034": "Domaines divers (non classé)",
+    "040": "Activités religieuses, spirituelles ou philosophiques (associations cultuelles)",
     "036": "Aide à l'emploi, développement local (bis)",
     "038": "Groupements de professionnels (ex. syndicats professionnels)",
     "050": "Activités politiques (bis)",
@@ -177,6 +178,7 @@ WALDEC_FAMILY_TO_VERTICAL = {
     "028": "asso",
     "029": "asso",
     "032": "asso",
+    "040": "asso",       # cultuelles — aligned on 032 (decision 2026-10-01)
     "001": "other",
     "002": "other",
     "030": "other",
@@ -197,6 +199,7 @@ KW_WELLNESS = re.compile(r"bien[- ]?[êe]tre|yoga|m[ée]ditation|sophrologie|rel
 # Helpers
 # --------------------------------------------------------------------------- #
 LOG: list[dict] = []          # one entry per source attempt -> `sources` sheet
+ANCIENS_CODES: dict[str, str] = {}  # former / delegated commune code -> current commune code
 NOTES: list[str] = []         # free-text caveats -> README
 
 
@@ -300,6 +303,25 @@ def try_fetch(key, url, dest=None):
     return None
 
 
+def remap_codes(df: pd.DataFrame, label: str, valid: set, sum_cols=None) -> pd.DataFrame:
+    """Replace former commune codes by the current one (ANCIENS_CODES). With `sum_cols`, re-aggregate
+    per code_insee. Logs how many rows were re-attached and how many codes stay unknown."""
+    df = df.copy()
+    moved = df["code_insee"].isin(ANCIENS_CODES.keys()) & ~df["code_insee"].isin(valid)
+    w = df.loc[moved, sum_cols].sum().sum() if sum_cols else int(moved.sum())
+    df.loc[moved, "code_insee"] = df.loc[moved, "code_insee"].map(ANCIENS_CODES)
+    unknown = df.loc[~df["code_insee"].isin(valid), "code_insee"]
+    if sum_cols:
+        lost = df.loc[~df["code_insee"].isin(valid), sum_cols].sum().sum()
+        df = df.groupby("code_insee", as_index=False)[sum_cols].sum(min_count=1)
+    else:
+        lost = len(unknown)
+    NOTES.append(f"{label} : {int(w)} rattaché(s) à la commune nouvelle depuis un ancien code INSEE "
+                 f"(commune fusionnée, déléguée ou associée) ; {int(lost)} non rattaché(s), code absent du COG "
+                 f"({', '.join(sorted(unknown.unique())[:10]) or '—'}).")
+    return df
+
+
 def is_idf_code(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str[:2].isin(IDF_DEPS)
 
@@ -332,6 +354,16 @@ def load_communes(workdir: Path) -> pd.DataFrame:
             raise SystemExit("No commune backbone available — cannot build the table.")
     with tarfile.open(tgz) as t:
         communes = json.load(t.extractfile("package/data/communes.json"))
+    # Merged communes: sources still carry former codes (e.g. 93059 Pierrefitte-sur-Seine ->
+    # 93066 Saint-Denis). Map them via `anciensCodes` of the current commune, and communes
+    # déléguées / associées via their `chefLieu`.
+    for c in communes:
+        if c["type"] == "commune-actuelle":
+            for old in c.get("anciensCodes", []):
+                ANCIENS_CODES.setdefault(old, c["code"])
+    for c in communes:
+        if c["type"] in ("commune-deleguee", "commune-associee") and c.get("chefLieu") not in (None, c["code"]):
+            ANCIENS_CODES.setdefault(c["code"], c["chefLieu"])
     rows = []
     for c in communes:
         if c.get("departement") not in IDF_DEPS:
@@ -584,6 +616,14 @@ def build(workdir: Path, outdir: Path):
     es = load_data_es(workdir)
 
     tbl = communes.copy()
+    valid = set(communes["code_insee"]) | {"75056"}
+    if rna is not None:
+        rna = remap_codes(rna, "RNA (associations)", valid)
+    if inj_commune is not None:
+        inj_commune = remap_codes(inj_commune, "INJEP (licences + clubs)", valid,
+                                  [c for c in ("licences", "clubs") if c in inj_commune.columns])
+    if es is not None:
+        es = remap_codes(es, "Data ES (équipements)", valid, ["equipements"])
     # --- RNA counts per vertical
     if rna is not None and len(rna):
         pv = rna.pivot_table(index="code_insee", columns="vertical", values="id", aggfunc="count", fill_value=0)
@@ -761,7 +801,10 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
         "- Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, "
         "hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios "
         "pour 1 000 habitants (plafonnés au 99e centile), pour les seules sources disponibles. Ce n'est ni une taille de "
-        "marché ni une prédiction.",
+        "marché ni une prédiction. Biais connus, conservés volontairement (décision 2026-10-01) : les "
+        "ratios font remonter des micro-communes (ex. Clairefontaine-en-Yvelines, ~850 hab., au 2e rang) ; "
+        "les arrondissements d'affaires gonflent `assos_per_1k` (Paris 8e : ~170 associations pour 1 000 hab., "
+        "sièges sociaux domiciliés). Un seuil de population sera appliqué dans la vue « villes suivantes » (G-003).",
         "- Paris figure en une ligne `commune` (75056) plus 20 lignes `arrondissement` (75101–75120) ; le rang n'est "
         "attribué qu'aux communes.",
         "- RNA : seules les associations `position = A` (actives) avec un code INSEE de commune IDF sont comptées ; "
@@ -789,8 +832,7 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
               "- `build.py` — script de construction", "",
               "## Hôtes requis", "",
               "`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA "
-              "Waldec), `data.education.gouv.fr` (exports Data ES), `data-pipeline-open.s3.sbg.io.cloud.ovh.net`, "
-              "`registry.npmjs.org` (paquet etalab).", ""]
+              "Waldec), `data.education.gouv.fr` (exports Data ES), `registry.npmjs.org` (paquet etalab).", ""]
     (PIPELINE_DIR / "README-sources.md").write_text("\n".join(lines), encoding="utf-8")
 
 
