@@ -4,6 +4,6 @@ Internal growth tooling for RLL (Real Life Life) — see `CLAUDE.md` for the rul
 
 | Pipeline | Scope | Status |
 |---|---|---|
-| `pipelines/fr-idf` | France — Île-de-France: communes × RLL verticals from RNA, INJEP, Data ES, INSEE | v0.1 skeleton (population only); RNA/INJEP/Data ES to be fetched from an environment allowed to reach data.gouv.fr / injep.fr / insee.fr |
+| `pipelines/fr-idf` | France — Île-de-France: communes × RLL verticals from RNA, INJEP, Data ES; population INSEE via @etalab/decoupage-administratif | v0.1 skeleton (population only); RNA/INJEP/Data ES to be fetched from an environment allowed to reach data.gouv.fr / injep.fr / insee.fr |
 
-Run: `pip install -r requirements.txt && cd pipelines/fr-idf && python3 build.py --workdir raw --out out`
+Run: `pip install -r requirements.txt && cd pipelines/fr-idf && python3 build.py` (defaults: `--workdir raw --out out`)

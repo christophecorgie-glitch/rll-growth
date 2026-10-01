@@ -4,6 +4,10 @@ Généré le 2026-09-30 par `build.py` (reproductible : `python3 build.py`).
 
 Périmètre : Île-de-France (75, 77, 78, 91, 92, 93, 94, 95). Données ouvertes françaises uniquement. Aucune donnée personnelle de personne physique dans les sorties (colonnes RNA nominatives jamais chargées ; champ `objet` libre non exporté).
 
+## Source de population (décision 2026-10-01)
+
+La population vient de **@etalab/decoupage-administratif 6.0.0** (npm, données sous Licence Ouverte) : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726. Elle remplace l'ancienne source primaire `insee_pop` (fichier INSEE des populations légales via data.gouv.fr), retirée du catalogue `SOURCES` : le paquet etalab republie le même fichier INSEE et porte aussi le COG. Version épinglée dans `build.py` (`ETALAB_COG_VERSION`).
+
 ## Sources tentées (ordre d'essai) et résultat
 
 | # | Source | URL | Licence | Date | Statut | Lignes brutes | Lignes IDF conservées | Détail |

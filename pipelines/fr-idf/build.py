@@ -8,15 +8,16 @@ open data only. Scope: IDF départements 75, 77, 78, 91, 92, 93, 94, 95.
 Sources (in order of attempt):
   1. RNA  — Répertoire National des Associations (data.gouv.fr, Licence Ouverte)
   2. INJEP — recensement géocodé des licences et clubs sportifs (data.gouv.fr, LO)
-  3. Data ES — recensement des équipements sportifs (data.gouv.fr, LO)
-  4. INSEE populations légales par commune — primary: insee.fr / data.gouv.fr ;
-     fallback: @etalab/decoupage-administratif (npm, Licence Ouverte pour les données)
-     which republishes the INSEE COG + populations légales.
+  3. Data ES — recensement des équipements sportifs (data.gouv.fr, fichiers servis par
+     data.education.gouv.fr, LO 2.0)
+  4. Communes + population — @etalab/decoupage-administratif (npm, Licence Ouverte pour les
+     données), which republishes the INSEE COG and the INSEE populations de référence
+     (population municipale). The package version is pinned so the millésime is known.
 
-Every download is attempted through the environment's HTTPS proxy. A refused /
-blocked download (403 / 407 / connection refused) is logged in the `sources`
-sheet and README-sources.md and the pipeline continues with what it has.
-Nothing is scraped; no retry through other tools.
+Every download goes through the environment's HTTPS proxy. Connection cuts, timeouts and
+HTTP 5xx are retried (up to 4 attempts, exponential back-off); 403 / 404 are never retried.
+A failed download is logged in the `sources` sheet and README-sources.md and the pipeline
+continues with what it has. Nothing is scraped.
 
 Privacy: no personal data of natural persons is ever written to the outputs.
 RNA columns naming people (dir_civilite, adrg_declarant, ...) are never loaded.
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import io
 import json
 import os
@@ -35,6 +37,7 @@ import re
 import ssl
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -43,6 +46,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+PIPELINE_DIR = Path(__file__).resolve().parent
 IDF_DEPS = ("75", "77", "78", "91", "92", "93", "94", "95")
 TODAY = dt.date.today().isoformat()
 VERSION = "v0.1"
@@ -75,26 +79,30 @@ SOURCES = {
     },
     "data_es": {
         "label": "Data ES — Recensement des équipements sportifs et lieux de pratique (complet)",
-        "dataset_url": "https://www.data.gouv.fr/fr/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/",
-        "api_url": "https://www.data.gouv.fr/api/1/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/",
+        # data.gouv.fr slug carries a "-1" suffix; the resources themselves are exports served by
+        # data.education.gouv.fr (same producer, same licence).
+        "dataset_url": "https://www.data.gouv.fr/fr/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet-1/",
+        "api_url": "https://www.data.gouv.fr/api/1/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet-1/",
         "licence": "Licence Ouverte / Open Licence 2.0 (Etalab)",
         "producer": "Ministère chargé des Sports",
     },
-    "insee_pop": {
-        "label": "INSEE — Populations légales par commune (fichier national)",
-        "dataset_url": "https://www.insee.fr/fr/statistiques/8680726",
-        "api_url": "https://www.data.gouv.fr/api/1/datasets/populations-legales-communes-et-arrondissements-municipaux-france-depuis-1876/",
-        "licence": "Licence Ouverte / Open Licence 2.0 (Etalab)",
-        "producer": "INSEE",
-    },
+    # Population: the former primary source `insee_pop` (INSEE file via data.gouv.fr) was removed
+    # (decision 2026-10-01). @etalab/decoupage-administratif is the single population source.
     "etalab_cog": {
-        "label": "@etalab/decoupage-administratif (npm) — COG + populations légales INSEE republiés",
+        "label": "@etalab/decoupage-administratif (npm) — COG + populations de référence INSEE republiés "
+                 "(source de population)",
         "dataset_url": "https://www.npmjs.com/package/@etalab/decoupage-administratif",
         "api_url": "https://registry.npmjs.org/@etalab/decoupage-administratif",
         "licence": "Données : Licence Ouverte (Etalab) — code : MIT",
         "producer": "Etalab / DINUM (republication de l'INSEE)",
     },
 }
+
+# Pinned so that the INSEE millésime below stays true. Changing the version means checking
+# the package README « Millésimes et versions de package » and its source list.
+ETALAB_COG_VERSION = "6.0.0"
+POP_MILLESIME = ("populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), "
+                 "population municipale — https://www.insee.fr/fr/statistiques/8680726")
 
 # --------------------------------------------------------------------------- #
 # RNA Waldec "objet social" families -> RLL verticals
@@ -208,21 +216,75 @@ def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licen
     print(f"[{status}] {key}: {url} — {detail}", file=sys.stderr)
 
 
-def fetch(url: str, dest: Path | None = None, timeout=180) -> bytes | Path:
-    """GET through the environment proxy; raise urllib.error.* on failure."""
+FETCH_ATTEMPTS = 4            # total attempts, first one included
+FETCH_BACKOFF = 5             # seconds; waits 5, 10, 20 between attempts (relay cuts come in bursts)
+# urllib's timeout applies to each socket operation (connect, each read), not to the whole
+# transfer: a 410 MB RNA zip may take as long as it needs as long as bytes keep arriving.
+TIMEOUT_API = 60
+TIMEOUT_FILE = 300
+
+# Connection cuts and timeouts: retried. Anything else (bad URL, TLS verification, ...) is not.
+_TRANSIENT = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TimeoutError,
+              http.client.RemoteDisconnected, http.client.IncompleteRead,
+              ssl.SSLEOFError, ssl.SSLZeroReturnError)
+
+
+def _is_transient(e: BaseException) -> bool:
+    if isinstance(e, urllib.error.HTTPError):
+        return 500 <= e.code < 600          # 5xx only; never 403 / 404 / other 4xx
+    if isinstance(e, urllib.error.URLError):
+        reason = e.reason
+        if isinstance(reason, BaseException):
+            return _is_transient(reason)
+        return False                        # e.g. "Tunnel connection failed: 403 Forbidden"
+    if isinstance(e, OSError) and re.search(r"Tunnel connection failed: (403|404|407)", str(e)):
+        return False                        # proxy refusal: a policy, not an outage
+    return isinstance(e, _TRANSIENT)
+
+
+def _fetch_once(url: str, dest: Path | None, timeout: int) -> bytes | Path:
     ctx = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or None)
-    req = urllib.request.Request(url, headers={"User-Agent": "rll-opendata-build/0.1"})
+    headers = {"User-Agent": "rll-opendata-build/0.1"}
+    part = dest.with_name(dest.name + ".part") if dest is not None else None
+    offset = part.stat().st_size if part is not None and part.exists() else 0
+    if offset:
+        headers["Range"] = f"bytes={offset}-"   # resume after a cut; restart if server ignores it
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
         if dest is None:
             return r.read()
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as f:
+        mode = "ab" if offset and r.status == 206 else "wb"
+        expected = r.headers.get("Content-Length")
+        written = 0
+        with open(part, mode) as f:
             while True:
                 chunk = r.read(1 << 20)
                 if not chunk:
                     break
                 f.write(chunk)
+                written += len(chunk)
+        if expected is not None and written < int(expected):
+            raise http.client.IncompleteRead(b"", int(expected) - written)
+        part.replace(dest)                  # only a complete file ever gets the final name
         return dest
+
+
+def fetch(url: str, dest: Path | None = None, timeout: int | None = None) -> bytes | Path:
+    """GET through the environment proxy, with retries on connection cuts, timeouts and 5xx.
+    Raises the last urllib / OSError on failure. With `dest`, streams to `dest.part` and
+    renames on completion; a retry resumes from the partial file when the server allows."""
+    timeout = timeout or (TIMEOUT_FILE if dest is not None else TIMEOUT_API)
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            return _fetch_once(url, dest, timeout)
+        except Exception as e:  # noqa: BLE001
+            if attempt == FETCH_ATTEMPTS or not _is_transient(e):
+                raise
+            wait = FETCH_BACKOFF * 2 ** (attempt - 1)
+            print(f"[retry {attempt}/{FETCH_ATTEMPTS - 1}] {url} — {type(e).__name__}: {e}; "
+                  f"next attempt in {wait}s", file=sys.stderr)
+            time.sleep(wait)
 
 
 def try_fetch(key, url, dest=None):
@@ -254,40 +316,14 @@ def pick_resource(api_json: dict, pattern: str, fmt=None):
 # 4. Communes + population (backbone)
 # --------------------------------------------------------------------------- #
 def load_communes(workdir: Path) -> pd.DataFrame:
-    """Return DataFrame: code_insee, nom, departement, population, niveau, commune_parent."""
-    # 4a. Primary: INSEE / data.gouv national file.
-    api = try_fetch("insee_pop", SOURCES["insee_pop"]["api_url"])
-    if api:
-        try:
-            j = json.loads(api)
-            r = pick_resource(j, r"commune", fmt="csv") or pick_resource(j, r"commune")
-            if r:
-                raw = try_fetch("insee_pop", r["url"], workdir / "insee_pop.bin")
-                if raw:
-                    df = pd.read_csv(raw, sep=None, engine="python", dtype=str)
-                    cols = {c.lower(): c for c in df.columns}
-                    code = next(cols[c] for c in cols if c in ("codgeo", "code_insee", "com", "code"))
-                    nom = next(cols[c] for c in cols if c in ("libgeo", "nom", "libelle", "nom_commune"))
-                    pop = next(cols[c] for c in cols if "pmun" in c or "population" in c)
-                    out = df[[code, nom, pop]].rename(columns={code: "code_insee", nom: "nom", pop: "population"})
-                    out = out[is_idf_code(out["code_insee"])].copy()
-                    out["population"] = pd.to_numeric(out["population"], errors="coerce")
-                    out["departement"] = out["code_insee"].str[:2]
-                    out["niveau"] = np.where(out["code_insee"].str.startswith("751"), "arrondissement", "commune")
-                    out["commune_parent"] = np.where(out["niveau"] == "arrondissement", "75056", out["code_insee"])
-                    log_source("insee_pop", r["url"], "OK", rows_raw=len(df), rows_kept=len(out),
-                               detail=r.get("title", ""))
-                    return out
-        except Exception as e:  # noqa: BLE001
-            log_source("insee_pop", SOURCES["insee_pop"]["api_url"], "FAILED", detail=f"parse error: {e}")
-
-    # 4b. Fallback: etalab npm package (republication of INSEE COG + populations légales).
-    tgz = workdir / "decoupage.tgz"
+    """Return DataFrame: code_insee, nom, departement, population, niveau, commune_parent.
+    Source: @etalab/decoupage-administratif (INSEE COG + populations de référence)."""
+    tgz = workdir / f"decoupage-administratif-{ETALAB_COG_VERSION}.tgz"
     meta = try_fetch("etalab_cog", SOURCES["etalab_cog"]["api_url"])
     if not meta:
         raise SystemExit("No commune backbone available — cannot build the table.")
     m = json.loads(meta)
-    ver = m["dist-tags"]["latest"]
+    ver = ETALAB_COG_VERSION
     tarball = m["versions"][ver]["dist"]["tarball"]
     pub = m["time"].get(ver, "")[:10]
     if not tgz.exists():
@@ -311,13 +347,19 @@ def load_communes(workdir: Path) -> pd.DataFrame:
             "codes_postaux": "|".join(c.get("codesPostaux", [])),
         })
     out = pd.DataFrame(rows)
+    LOG.append({
+        "source_key": "insee_pop", "source": "INSEE — Populations légales par commune (fichier national)",
+        "producer": "INSEE", "url": "https://www.insee.fr/fr/statistiques/8680726",
+        "licence": "Licence Ouverte / Open Licence 2.0 (Etalab)", "download_date": "", "status": "RETIRÉE",
+        "rows_raw": None, "rows_kept_idf": None,
+        "detail": f"Source retirée le 2026-10-01, remplacée par etalab_cog ({ver}) qui republie le même "
+                  f"fichier INSEE : {POP_MILLESIME}. Non téléchargée."})
     log_source("etalab_cog", tarball, "OK", rows_raw=len(communes), rows_kept=len(out),
-               detail=f"package {ver} published {pub}; population = INSEE populations légales "
-                      f"bundled in that release (see package README « Millésimes »)",
+               detail=f"package {ver} (publié le {pub}) ; population = {POP_MILLESIME}",
                date=TODAY)
-    NOTES.append(f"Population: INSEE populations légales as republished in @etalab/decoupage-administratif "
-                 f"{ver} (published {pub}). The exact INSEE millésime is the one referenced in the package "
-                 f"README (insee.fr/fr/statistiques/8680726); verify before quoting a year.")
+    NOTES.append(f"Population : {POP_MILLESIME}, telles que republiées par @etalab/decoupage-administratif "
+                 f"{ver} (publié le {pub}, version épinglée dans build.py). Cette source remplace l'ancienne "
+                 f"source primaire `insee_pop` (fichier INSEE via data.gouv.fr), retirée le 2026-10-01.")
     return out
 
 
@@ -668,6 +710,21 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
              "Périmètre : Île-de-France (75, 77, 78, 91, 92, 93, 94, 95). Données ouvertes françaises uniquement. "
              "Aucune donnée personnelle de personne physique dans les sorties (colonnes RNA nominatives jamais chargées ; "
              "champ `objet` libre non exporté).", "",
+             "## Source de population (décision 2026-10-01)", "",
+             f"La population vient de **@etalab/decoupage-administratif {ETALAB_COG_VERSION}** (npm, données sous "
+             f"Licence Ouverte) : {POP_MILLESIME}. Elle remplace l'ancienne source primaire `insee_pop` (fichier INSEE "
+             "des populations légales via data.gouv.fr), retirée du catalogue `SOURCES` : le paquet etalab republie "
+             "le même fichier INSEE et porte aussi le COG (communes, arrondissements municipaux, codes postaux), "
+             "ce qui évite une seconde jointure. La version du paquet est épinglée dans `build.py` "
+             "(`ETALAB_COG_VERSION`) pour que le millésime annoncé reste exact ; changer de version impose de "
+             "vérifier la section « Millésimes et versions de package » du README du paquet.", "",
+             "## Téléchargements", "",
+             f"Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de connexion, timeout et "
+             f"HTTP 5xx : jusqu'à {FETCH_ATTEMPTS} tentatives avec délai exponentiel ({FETCH_BACKOFF} s, "
+             f"{FETCH_BACKOFF * 2} s, {FETCH_BACKOFF * 4} s), reprise du fichier partiel par `Range` quand le serveur "
+             f"l'accepte. 403 et 404 ne sont jamais retentés. Délai d'attente par opération réseau : {TIMEOUT_API} s "
+             f"(API) / {TIMEOUT_FILE} s (fichiers) — il borne chaque lecture, pas la durée totale, d'où un zip RNA de "
+             "~410 Mo téléchargeable sans plafond global.", "",
              "## Sources tentées (ordre d'essai) et résultat", ""]
     lines.append("| # | Source | URL | Licence | Date | Statut | Lignes brutes | Lignes IDF conservées | Détail |")
     lines.append("|---|---|---|---|---|---|---|---|---|")
@@ -678,12 +735,12 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
     lines += ["", "## Notes et réserves", ""]
     for n in NOTES:
         lines.append(f"- {n}")
-    failed = sources[sources["status"] != "OK"]["source_key"].unique().tolist()
+    failed = sorted(set(sources.loc[sources["status"] == "FAILED", "source_key"])
+                    - set(sources.loc[sources["status"] == "OK", "source_key"]))
     if failed:
-        lines.append(f"- Sources refusées par le proxy de sortie (403 sur CONNECT, politique d'organisation) ou "
-                     f"inaccessibles lors de cette exécution : {', '.join(failed)}. Les colonnes correspondantes sont "
-                     f"vides ; relancer `build.py` depuis un poste ayant accès à data.gouv.fr / insee.fr les remplit sans "
-                     f"autre modification.")
+        lines.append(f"- Sources en échec lors de cette exécution : {', '.join(failed)}. Les colonnes "
+                     f"correspondantes sont vides ; relancer `build.py` depuis un poste ayant accès aux hôtes listés "
+                     f"ci-dessous les remplit sans autre modification.")
     lines += [
         "- Le score `score_potentiel_RLL` est une **heuristique** : moyenne des z-scores (calculés sur les communes IDF, "
         "hors arrondissements) de log1p(assos_total), log1p(licences_sport), log1p(equipements_sportifs) et des ratios "
@@ -713,14 +770,18 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.xlsx` — feuilles : villes_x_verticals, top_associations_sport, "
               "top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.csv` — feuille principale (séparateur `;`, UTF-8 BOM)",
-              "- `build.py` — script de construction", ""]
-    (outdir / "README-sources.md").write_text("\n".join(lines), encoding="utf-8")
+              "- `build.py` — script de construction", "",
+              "## Hôtes requis", "",
+              "`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA "
+              "Waldec), `data.education.gouv.fr` (exports Data ES), `data-pipeline-open.s3.sbg.io.cloud.ovh.net`, "
+              "`registry.npmjs.org` (paquet etalab).", ""]
+    (PIPELINE_DIR / "README-sources.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workdir", default=str(Path(__file__).resolve().parent / "raw"))
-    ap.add_argument("--out", default=str(Path(__file__).resolve().parent))
+    ap.add_argument("--workdir", default=str(PIPELINE_DIR / "raw"))
+    ap.add_argument("--out", default=str(PIPELINE_DIR / "out"))
     a = ap.parse_args()
     tbl, src = build(Path(a.workdir), Path(a.out))
     print(src.to_string(), file=sys.stderr)
