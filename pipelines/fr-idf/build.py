@@ -2,7 +2,7 @@
 """
 RLL — Île-de-France : villes x verticals (v0.1)
 ================================================
-Builds RLL-IDF-villes-x-verticals-v0.1.xlsx (+ CSV, + the generated part of README-sources.md) from French
+Builds RLL-IDF-villes-x-verticals-v0.1.xlsx (+ CSV, + out/sources.md) from French
 open data only. Scope: IDF départements 75, 77, 78, 91, 92, 93, 94, 95.
 
 Sources (in order of attempt):
@@ -19,8 +19,11 @@ are replaced by the code of the current commune before aggregation (table from t
 
 Every download goes through the environment's HTTPS proxy. Connection cuts, timeouts and
 HTTP 5xx are retried (up to 4 attempts, exponential back-off); 403 / 404 are never retried.
-A failed download is logged in the `sources` sheet and README-sources.md and the pipeline
+A failed download is logged in the `sources` sheet and out/sources.md and the pipeline
 continues with what it has. Nothing is scraped.
+
+Writes: only in --out (xlsx, csv, sources.md) and, when a file is missing from the cache, in
+--workdir (raw downloads). The hand-written pipeline README (README-sources.md) is never written.
 
 Privacy: no personal data of natural persons is ever written to the outputs.
 RNA columns naming people (dir_civilite, adrg_declarant, ...) are never loaded.
@@ -210,7 +213,7 @@ KW_WELLNESS = re.compile(r"bien[- ]?[êe]tre|yoga|m[ée]ditation|sophrologie|rel
 # Helpers
 # --------------------------------------------------------------------------- #
 LOG: list[dict] = []          # one entry per source attempt -> `sources` sheet
-NOTES: list[str] = []         # free-text caveats -> README
+NOTES: list[str] = []         # free-text caveats -> out/sources.md
 
 
 def log_source(key, url, status, rows_raw=None, rows_kept=None, detail="", licence=None, date=None):
@@ -362,8 +365,8 @@ COMMUNE_NAMES: dict[str, str] = {}   # every code in the package (current and fo
 # EPCI à fiscalité propre otherwise (epci.json). Filled by load_communes(); read by the focus views only.
 TERRITOIRES: dict[str, dict] = {}
 TERRITOIRES_SRC: dict[str, int] = {}
-FOCUS_INFO: dict = {}                # focus codes and reference sizes -> README
-REMAP_REPORT: list[dict] = []        # per source: orphans before / after -> README + sheet
+FOCUS_INFO: dict = {}                # focus codes and reference sizes -> out/sources.md
+REMAP_REPORT: list[dict] = []        # per source: orphans before / after -> out/sources.md + sheet
 REMAP_DETAIL: list[dict] = []        # per source x former code: rows / value reassigned
 
 
@@ -1068,19 +1071,16 @@ def build(workdir: Path, outdir: Path, focus: list[str] | None = None):
                 width = min(60, max(10, max(len(str(c.value)) if c.value is not None else 0 for c in col[:200]) + 2))
                 ws.column_dimensions[col[0].column_letter].width = width
     tbl.to_csv(outdir / f"RLL-IDF-villes-x-verticals-{VERSION}.csv", index=False, sep=";", encoding="utf-8-sig")
-    write_readme(outdir, sources, mapping, mapping_kw, remap_report, remap_detail)
+    write_sources_md(outdir, sources, mapping, mapping_kw, remap_report, remap_detail)
     return tbl, sources
 
 
-README_BEGIN = "<!-- BEGIN GENERATED: build.py -->"
-README_END = "<!-- END GENERATED: build.py -->"
-
-
-def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, mapping_kw: pd.DataFrame,
-                 remap_report: pd.DataFrame, remap_detail: pd.DataFrame):
-    """Rewrite the generated part between the README_BEGIN / README_END markers of the pipeline
-    README, leaving the rest of that file as is. Nothing is written to `outdir`."""
-    lines = [f"# RLL — IDF villes × verticals {VERSION} — sources & méthode", "",
+def write_sources_md(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, mapping_kw: pd.DataFrame,
+                     remap_report: pd.DataFrame, remap_detail: pd.DataFrame):
+    """Write the source register of this run (source, licence, date, row counts, notes, mapping) to
+    `outdir`/sources.md — the same facts as the `sources` sheet. The hand-written pipeline README
+    (README-sources.md) is never written by the build."""
+    lines = [f"# RLL — IDF villes × verticals {VERSION} — registre des sources", "",
              f"Généré le {TODAY} par `build.py` (reproductible : `python3 build.py`).", "",
              "Périmètre : Île-de-France (75, 77, 78, 91, 92, 93, 94, 95). Données ouvertes françaises uniquement. "
              "Aucune donnée personnelle de personne physique dans les sorties (colonnes RNA nominatives jamais chargées ; "
@@ -1154,7 +1154,7 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
         f"(option `--focus`). Références des percentiles : {FOCUS_INFO['n_idf']} communes IDF (hors arrondissements, "
         f"Paris compté une fois) ; strate {FOCUS_STRATE[0]}–{FOCUS_STRATE[1]} habitants : {FOCUS_INFO['n_strate']} "
         f"communes ; `vertical_dense_*` de `focus_vague2` : {FOCUS_INFO['n_big']} communes de {VAGUE2_POP_MIN} "
-        "habitants ou plus. Méthode : voir la partie rédigée de ce README.",
+        "habitants ou plus. Méthode : voir `README-sources.md` du pipeline.",
         f"- Territoires (feuille `focus_vague2`) : `epci.json` ({TERRITOIRES_SRC['n_epci']} EPCI à fiscalité propre) "
         f"et `ept.json` ({TERRITOIRES_SRC['n_ept']} établissements publics territoriaux) du paquet "
         f"@etalab/decoupage-administratif {ETALAB_COG_VERSION} déjà utilisé pour la population : aucune nouvelle "
@@ -1186,22 +1186,15 @@ def write_readme(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame, map
               "top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, "
               "correspondance_communes, focus_profil, focus_associations, focus_vague2",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.csv` — feuille principale (séparateur `;`, UTF-8 BOM)",
-              "- `build.py` — script de construction", "",
+              "- `sources.md` — ce registre (généré par `build.py`, comme la feuille `sources`)",
+              "- `../README-sources.md` — README du pipeline, rédigé à la main, jamais écrit par `build.py`", "",
               "## Hôtes requis", "",
               "`www.data.gouv.fr`, `static.data.gouv.fr` (API et fichiers INJEP), `media.interieur.gouv.fr` (zip RNA "
               "Waldec), `data.education.gouv.fr` (exports Data ES), `registry.npmjs.org` (paquet etalab).", ""]
-    text = "\n".join(lines)
-    readme = PIPELINE_DIR / "README-sources.md"
-    current = readme.read_text(encoding="utf-8") if readme.exists() else ""
-    if README_BEGIN in current and README_END in current:
-        head, rest = current.split(README_BEGIN, 1)
-        tail = rest.split(README_END, 1)[1]
-        readme.write_text(f"{head}{README_BEGIN}\n{text}\n{README_END}{tail}", encoding="utf-8")
-    else:
-        print(f"[readme] markers not found in {readme}; README left unchanged", file=sys.stderr)
+    (outdir / "sources.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None):
     ap = argparse.ArgumentParser()
     # Defaults are relative to this file, not to the current directory: pipelines/fr-idf/raw and
     # pipelines/fr-idf/out whether build.py is run from the repo root or from the pipeline folder.
@@ -1210,7 +1203,11 @@ if __name__ == "__main__":
     ap.add_argument("--focus", nargs="+", default=FOCUS_DEFAULT, metavar="CODE_INSEE",
                     help="codes INSEE des villes du focus, séparés par des espaces ou des virgules "
                          f"(défaut : villes pilotes {' '.join(FOCUS_DEFAULT)}) -> feuilles focus_*")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     tbl, src = build(Path(a.workdir), Path(a.out), a.focus)
     print(src.to_string(), file=sys.stderr)
     print(tbl.head(15).to_string(), file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
