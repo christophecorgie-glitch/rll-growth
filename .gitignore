@@ -4,3 +4,4 @@ pipelines/**/work/
 *.zip
 __pycache__/
 .env
+.pytest_cache/
