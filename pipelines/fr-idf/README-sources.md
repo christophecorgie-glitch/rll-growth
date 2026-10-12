@@ -73,6 +73,41 @@ quand la ville a moins de 10 associations actives dans ce vertical.
   qu'une seule association de ce type suffirait à placer le vertical en tête ; au-delà de 5 000 habitants, la part
   de zéros tombe à 38 % pour alumni, 20 % pour gaming, 11 % pour family et ~0 % pour les autres.
 
+## Comparables — feuilles `comparables`, `comparables_verticals` et `out/RLL-IDF-comparables-v0.1.csv`
+
+Vue ajoutée **après** toutes les feuilles existantes ; elle lit la table `villes_x_verticals` sans la modifier
+(le score, les autres feuilles et le CSV principal sont inchangés).
+
+**Tranche.** Communes IDF de niveau `commune` (arrondissements exclus, Paris compté une fois) dont la population
+municipale est comprise entre `COMPARABLES_POP` = **5 000 et 50 000 habitants**, bornes incluses (constantes en
+tête de `build.py`). Raisons :
+- borne basse 5 000 : le score place des micro-communes en tête par l'effet des ratios pour 1 000 habitants
+  (biais documenté ; au build G-001, 9 des 15 premières communes IDF avaient moins de 3 000 habitants). C'est le
+  même seuil que `focus_vague2` ;
+- borne haute 50 000 : rester dans l'ordre de grandeur des villes pilotes — Igny (~10 800 hab.), Verrières-le-Buisson
+  (~15 100), Le Plessis-Robinson (~28 800), Palaiseau (~37 500) — en écartant les grandes villes (Paris, Boulogne,
+  Saint-Denis, Argenteuil, Versailles…) dont les volumes ne sont pas comparables.
+
+**`comparables`** — une ligne par commune de la tranche, classée par `score_potentiel_RLL` existant (à égalité :
+population décroissante, comme `villes_x_verticals`) :
+- `rang_tranche` (1 = meilleur score de la tranche) et `rang_IDF` (rang de `villes_x_verticals`) ;
+- `pilote` : vrai pour les 4 villes pilotes (`PILOTES` = Igny 91312, Palaiseau 91477, Verrières-le-Buisson 91645,
+  Le Plessis-Robinson 92060), indépendamment de `--focus` ;
+- les compteurs `assos_<vertical>` (dont `other`), `assos_total`, `clubs_sport`, `licences_sport`,
+  `equipements_sportifs`, les densités `assos_per_1k`, `licences_per_1k`, `equipements_per_1k` (pour 1 000
+  habitants) et le score ;
+- `rang_tranche_densite_<vertical>` pour les dix verticals (hors `other`) : rang de la commune dans la tranche
+  pour le nombre d'associations de ce vertical **pour 1 000 habitants** (1 = la plus dense ; ex aequo au même rang).
+
+**`comparables_verticals`** — pour chacun des dix verticals (hors `other`), les 20 communes de la tranche
+(`COMPARABLES_TOP_N`) qui ont le plus d'associations de ce vertical pour 1 000 habitants (à égalité : nombre
+d'associations, population, code INSEE) : vertical, rang, commune, département, population, pilote, nombre
+d'associations du vertical et densité pour 1 000 habitants. Le classement se fait sur la densité plutôt que sur le
+nombre, pour comparer des communes de tailles différentes dans la tranche.
+
+Ce sont des **densités associatives** tirées du RNA (et, pour le sport, de l'INJEP et de Data ES) : ni une taille
+de marché, ni une mesure d'activité réelle, ni une prédiction.
+
 ## Source de population (décision 2026-10-01)
 
 La population vient de **@etalab/decoupage-administratif** (npm, données sous Licence Ouverte), version épinglée
@@ -186,8 +221,10 @@ culture), 015 (éducation → asso), 013 (chasse/pêche → nature) et 034 (tour
   du cache).
 - `out/RLL-IDF-villes-x-verticals-v0.1.xlsx` — feuilles : villes_x_verticals, top_associations_sport,
   top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals,
-  correspondance_communes, focus_profil, focus_associations, focus_vague2.
+  correspondance_communes, focus_profil, focus_associations, focus_vague2, comparables,
+  comparables_verticals.
 - `out/RLL-IDF-villes-x-verticals-v0.1.csv` — feuille principale (séparateur `;`, UTF-8 BOM).
+- `out/RLL-IDF-comparables-v0.1.csv` — feuille `comparables` (séparateur `;`, UTF-8 BOM).
 - `out/sources.md` — registre des sources de l'exécution (généré).
 - `tests/` — tests pytest sans réseau (`python3 -m pytest pipelines/fr-idf/tests`).
 
