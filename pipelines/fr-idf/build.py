@@ -33,6 +33,9 @@ focus_profil, focus_associations and focus_vague2. They are views on the table a
 same sources (raw/) plus the EPCI / EPT files of the same etalab package, and change nothing in
 the other sheets nor in the CSV.
 
+Comparables: sheets comparables / comparables_verticals and out/RLL-IDF-comparables-v0.1.csv — IDF
+communes of COMPARABLES_POP inhabitants ranked by the unchanged score (read-only view on the table).
+
 Reproduce:  python3 build.py [--workdir DIR] [--out DIR] [--focus CODE [CODE ...]]
 Requires: pandas, openpyxl (pip install --break-system-packages pandas openpyxl)
 """
@@ -124,6 +127,16 @@ FOCUS_STRATE = (10_000, 40_000)    # comparison stratum (population municipale, 
 FOCUS_TOP_N = 10                   # focus_associations: associations per city x vertical
 VAGUE2_POP_MIN = 5_000             # focus_vague2: population threshold (score bias 1, micro-communes)
 VAGUE2_TOP_N = 15
+
+# --------------------------------------------------------------------------- #
+# Comparables view: IDF communes of a similar size, ranked by the existing score (unchanged).
+# The lower bound removes the micro-communes that the per-1 000 ratios push to the top of the score
+# (bias documented in G-001: 9 of the top 15 communes have < 3 000 inhabitants); the pilot cities
+# are ~10 000 to ~38 000 inhabitants, well inside the band. Bounds included, population municipale.
+# --------------------------------------------------------------------------- #
+COMPARABLES_POP = (5_000, 50_000)
+COMPARABLES_TOP_N = 20             # comparables_verticals: communes per vertical
+PILOTES = FOCUS_DEFAULT            # `pilote` column: the 4 pilot cities, whatever --focus says
 
 # --------------------------------------------------------------------------- #
 # RNA Waldec "objet social" families -> RLL verticals
@@ -896,6 +909,45 @@ def focus_vague2(tbl: pd.DataFrame, focus: list[str]) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+COMPARABLES_VERTICALS = [v for v in VERTICALS if v != "other"]   # the ten RLL verticals
+
+
+def comparables(tbl: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """IDF communes (no arrondissements) with COMPARABLES_POP[0] <= population <= COMPARABLES_POP[1],
+    ranked by score_potentiel_RLL (ties: population, as in villes_x_verticals). Read-only on `tbl`.
+    Returns (comparables, comparables_verticals): one row per commune, and for each of the ten
+    verticals the COMPARABLES_TOP_N communes of the band with the most associations of that vertical
+    per 1 000 inhabitants (ties: count, population, code INSEE)."""
+    pop = pd.to_numeric(tbl["population"], errors="coerce")
+    band = tbl[(tbl["niveau"] == "commune") & (pop >= COMPARABLES_POP[0]) & (pop <= COMPARABLES_POP[1])].copy()
+    band = band.sort_values(["score_potentiel_RLL", "population"], ascending=[False, False], na_position="last")
+    band["rang_tranche"] = range(1, len(band) + 1)
+    band["pilote"] = band["code_insee"].isin(PILOTES)
+    dens = {v: band[f"assos_{v}"].astype(float) / band["population"].astype(float) * 1000
+            for v in COMPARABLES_VERTICALS}
+    for v in COMPARABLES_VERTICALS:     # rank of the vertical density within the band (1 = densest)
+        band[f"rang_tranche_densite_{v}"] = dens[v].rank(ascending=False, method="min").astype("Int64")
+    cols = (["rang_tranche", "rang", "code_insee", "nom", "departement", "population", "pilote"]
+            + [f"assos_{v}" for v in VERTICALS] + ["assos_total", "clubs_sport", "licences_sport",
+                                                   "equipements_sportifs", "assos_per_1k", "licences_per_1k",
+                                                   "equipements_per_1k", "score_potentiel_RLL"]
+            + [f"rang_tranche_densite_{v}" for v in COMPARABLES_VERTICALS])
+    out = band[cols].rename(columns={"rang": "rang_IDF"}).reset_index(drop=True)
+    for c in ("assos_per_1k", "licences_per_1k", "equipements_per_1k"):
+        out[c] = out[c].round(3)
+    parts = []
+    for v in COMPARABLES_VERTICALS:
+        d = band.assign(_d=dens[v], _n=band[f"assos_{v}"])
+        d = d.sort_values(["_d", "_n", "population", "code_insee"], ascending=[False, False, False, True])
+        d = d.head(COMPARABLES_TOP_N)
+        parts.append(pd.DataFrame({
+            "vertical": v, "rang_vertical": range(1, len(d) + 1), "code_insee": d["code_insee"].values,
+            "commune": d["nom"].values, "departement": d["departement"].values,
+            "population": d["population"].values, "pilote": d["pilote"].values,
+            "assos_vertical": d["_n"].values, "assos_vertical_pour_1000_hab": d["_d"].round(3).values}))
+    return out, pd.concat(parts, ignore_index=True)
+
+
 def check_focus(communes: pd.DataFrame, focus: list[str]) -> list[str]:
     """`--focus` values (space- or comma-separated) -> unique IDF commune codes, in the given order."""
     codes = [c.strip() for f in focus for c in f.split(",") if c.strip()]
@@ -1050,6 +1102,10 @@ def build(workdir: Path, outdir: Path, focus: list[str] | None = None):
                       n_idf=len(ref_idf), n_strate=len(ref_strate),
                       n_big=int(((tbl["niveau"] == "commune") & (tbl["population"] >= VAGUE2_POP_MIN)).sum()))
 
+    # --- comparables view: appended after every existing sheet, score unchanged
+    comp, comp_vert = comparables(tbl)
+    FOCUS_INFO.update(n_comparables=len(comp))
+
     xlsx = outdir / f"RLL-IDF-villes-x-verticals-{VERSION}.xlsx"
     with pd.ExcelWriter(xlsx, engine="openpyxl") as xw:
         tbl.to_excel(xw, sheet_name="villes_x_verticals", index=False)
@@ -1064,6 +1120,8 @@ def build(workdir: Path, outdir: Path, focus: list[str] | None = None):
                               startrow=len(remap_report) + 3)
         for k, v in focus_sheets.items():
             v.to_excel(xw, sheet_name=k, index=False)
+        comp.to_excel(xw, sheet_name="comparables", index=False)
+        comp_vert.to_excel(xw, sheet_name="comparables_verticals", index=False)
         # cosmetic: freeze header, autosize
         for ws in xw.book.worksheets:
             ws.freeze_panes = "A2"
@@ -1071,6 +1129,7 @@ def build(workdir: Path, outdir: Path, focus: list[str] | None = None):
                 width = min(60, max(10, max(len(str(c.value)) if c.value is not None else 0 for c in col[:200]) + 2))
                 ws.column_dimensions[col[0].column_letter].width = width
     tbl.to_csv(outdir / f"RLL-IDF-villes-x-verticals-{VERSION}.csv", index=False, sep=";", encoding="utf-8-sig")
+    comp.to_csv(outdir / f"RLL-IDF-comparables-{VERSION}.csv", index=False, sep=";", encoding="utf-8-sig")
     write_sources_md(outdir, sources, mapping, mapping_kw, remap_report, remap_detail)
     return tbl, sources
 
@@ -1159,6 +1218,9 @@ def write_sources_md(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame,
         f"et `ept.json` ({TERRITOIRES_SRC['n_ept']} établissements publics territoriaux) du paquet "
         f"@etalab/decoupage-administratif {ETALAB_COG_VERSION} déjà utilisé pour la population : aucune nouvelle "
         "source. Métropole du Grand Paris → EPT ; Paris, hors EPT → département.",
+        f"- Comparables : {FOCUS_INFO['n_comparables']} communes IDF de {COMPARABLES_POP[0]} à {COMPARABLES_POP[1]} "
+        "habitants (bornes incluses), classées par `score_potentiel_RLL` inchangé ; densités associatives, pas un "
+        "marché. Méthode : voir `README-sources.md` du pipeline.",
         "", "## Communes fusionnées — écart avant / après", "",
         "| Source | Total IDF | Hors communes avant | Hors communes après | Réaffectés | Codes restants (non INSEE) |",
         "|---|---|---|---|---|---|"]
@@ -1184,8 +1246,10 @@ def write_sources_md(outdir: Path, sources: pd.DataFrame, mapping: pd.DataFrame,
     lines += ["", "## Fichiers", "",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.xlsx` — feuilles : villes_x_verticals, top_associations_sport, "
               "top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, "
-              "correspondance_communes, focus_profil, focus_associations, focus_vague2",
+              "correspondance_communes, focus_profil, focus_associations, focus_vague2, comparables, "
+              "comparables_verticals",
               f"- `RLL-IDF-villes-x-verticals-{VERSION}.csv` — feuille principale (séparateur `;`, UTF-8 BOM)",
+              f"- `RLL-IDF-comparables-{VERSION}.csv` — feuille `comparables` (séparateur `;`, UTF-8 BOM)",
               "- `sources.md` — ce registre (généré par `build.py`, comme la feuille `sources`)",
               "- `../README-sources.md` — README du pipeline, rédigé à la main, jamais écrit par `build.py`", "",
               "## Hôtes requis", "",

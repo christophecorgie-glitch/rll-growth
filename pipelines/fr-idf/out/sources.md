@@ -1,6 +1,6 @@
 # RLL — IDF villes × verticals v0.1 — registre des sources
 
-Généré le 2026-10-11 par `build.py` (reproductible : `python3 build.py`).
+Généré le 2026-10-12 par `build.py` (reproductible : `python3 build.py`).
 
 Périmètre : Île-de-France (75, 77, 78, 91, 92, 93, 94, 95). Données ouvertes françaises uniquement. Aucune donnée personnelle de personne physique dans les sorties (colonnes RNA nominatives jamais chargées ; champ `objet` libre non exporté).
 
@@ -17,12 +17,12 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 | # | Source | URL | Licence | Date | Statut | Lignes brutes | Lignes IDF conservées | Détail |
 |---|---|---|---|---|---|---|---|---|
 | 1 | INSEE — Populations légales par commune (fichier national) | https://www.insee.fr/fr/statistiques/8680726 | Licence Ouverte / Open Licence 2.0 (Etalab) |  | **RETIRÉE** |  |  | Source retirée le 2026-10-01, remplacée par etalab_cog (6.0.0) qui republie le même fichier INSEE : populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726. Non téléchargée. |
-| 2 | @etalab/decoupage-administratif (npm) — COG + populations de référence INSEE republiés (source de population) | https://registry.npmjs.org/@etalab/decoupage-administratif/-/decoupage-administratif-6.0.0.tgz | Données : Licence Ouverte (Etalab) — code : MIT | 2026-10-11 | **OK** | 37590 | 1286 | package 6.0.0 (publié le 2026-03-09) — téléchargé pendant ce build (2026-10-11) ; population = populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726 |
-| 3 | RNA — Répertoire National des Associations (fichier Waldec mensuel) | https://media.interieur.gouv.fr/rna/rna_waldec_20261001.zip | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 2314908 | 331435 | rna_waldec_20261001.zip — téléchargé pendant ce build (2026-10-11) — filtered position='A' and IDF code INSEE/CP |
+| 2 | @etalab/decoupage-administratif (npm) — COG + populations de référence INSEE republiés (source de population) | https://registry.npmjs.org/@etalab/decoupage-administratif/-/decoupage-administratif-6.0.0.tgz | Données : Licence Ouverte (Etalab) — code : MIT | 2026-10-11 | **OK** | 37590 | 1286 | package 6.0.0 (publié le 2026-03-09) — cache local raw/ (téléchargé le 2026-10-11) ; population = populations de référence 2023 (INSEE, en vigueur au 1er janvier 2026), population municipale — https://www.insee.fr/fr/statistiques/8680726 |
+| 3 | RNA — Répertoire National des Associations (fichier Waldec mensuel) | https://media.interieur.gouv.fr/rna/rna_waldec_20261001.zip | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 2314908 | 331435 | rna_waldec_20261001.zip — cache local raw/ (téléchargé le 2026-10-11) — filtered position='A' and IDF code INSEE/CP |
 | 4 | RNA agrégé à l'échelle nationale (fallback) | https://www.data.gouv.fr/api/1/datasets/rna-agrege-a-lechelle-nationale/ | Licence Ouverte / Open Licence 2.0 (Etalab) |  | **NOT_USED** |  |  | source de secours non lue (fichier Waldec disponible) |
-| 5 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163107/lic-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 1014746 | 73285 | lic-data-2023.csv — téléchargé pendant ce build (2026-10-11) — value column 'Total' |
-| 6 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163249/clubs-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 121700 | 12697 | clubs-data-2023.csv — téléchargé pendant ce build (2026-10-11) — value column 'Clubs' |
-| 7 | Data ES — Recensement des équipements sportifs et lieux de pratique (complet) | https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/exports/csv?use_labels=true | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 333636 | 30064 | data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet.csv — téléchargé pendant ce build (2026-10-11) |
+| 5 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163107/lic-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 1014746 | 73285 | lic-data-2023.csv — cache local raw/ (téléchargé le 2026-10-11) — value column 'Total' |
+| 6 | INJEP / Ministère des Sports — licences et clubs sportifs géocodés | https://static.data.gouv.fr/resources/donnees-geocodees-issues-du-recensement-des-licences-et-clubs-aupres-des-federations-sportives-agreees-par-le-ministere-charge-des-sports/20251229-163249/clubs-data-2023.csv | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 121700 | 12697 | clubs-data-2023.csv — cache local raw/ (téléchargé le 2026-10-11) — value column 'Clubs' |
+| 7 | Data ES — Recensement des équipements sportifs et lieux de pratique (complet) | https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet/exports/csv?use_labels=true | Licence Ouverte / Open Licence 2.0 (Etalab) | 2026-10-11 | **OK** | 333636 | 30064 | data-es-recensement-des-equipements-sportifs-et-lieux-de-pratique-complet.csv — cache local raw/ (téléchargé le 2026-10-11) |
 
 ## Notes et réserves
 
@@ -40,6 +40,7 @@ Chaque téléchargement passe par le proxy HTTPS de l'environnement. Coupure de 
 - Data ES : un équipement = une ligne dédoublonnée sur l'identifiant d'équipement ; les lieux de pratique non bâtis (sentiers, plans d'eau) sont inclus.
 - Focus (G-003) : Igny (91312), Palaiseau (91477), Verrières-le-Buisson (91645), Le Plessis-Robinson (92060) (option `--focus`). Références des percentiles : 1266 communes IDF (hors arrondissements, Paris compté une fois) ; strate 10000–40000 habitants : 200 communes ; `vertical_dense_*` de `focus_vague2` : 377 communes de 5000 habitants ou plus. Méthode : voir `README-sources.md` du pipeline.
 - Territoires (feuille `focus_vague2`) : `epci.json` (1255 EPCI à fiscalité propre) et `ept.json` (11 établissements publics territoriaux) du paquet @etalab/decoupage-administratif 6.0.0 déjà utilisé pour la population : aucune nouvelle source. Métropole du Grand Paris → EPT ; Paris, hors EPT → département.
+- Comparables : 332 communes IDF de 5000 à 50000 habitants (bornes incluses), classées par `score_potentiel_RLL` inchangé ; densités associatives, pas un marché. Méthode : voir `README-sources.md` du pipeline.
 
 ## Communes fusionnées — écart avant / après
 
@@ -107,8 +108,9 @@ Règles par mots-clés (appliquées après le mapping par famille) :
 
 ## Fichiers
 
-- `RLL-IDF-villes-x-verticals-v0.1.xlsx` — feuilles : villes_x_verticals, top_associations_sport, top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, correspondance_communes, focus_profil, focus_associations, focus_vague2
+- `RLL-IDF-villes-x-verticals-v0.1.xlsx` — feuilles : villes_x_verticals, top_associations_sport, top_associations_culture, top_associations_loisirs, federations_idf, sources, mapping_waldec_verticals, correspondance_communes, focus_profil, focus_associations, focus_vague2, comparables, comparables_verticals
 - `RLL-IDF-villes-x-verticals-v0.1.csv` — feuille principale (séparateur `;`, UTF-8 BOM)
+- `RLL-IDF-comparables-v0.1.csv` — feuille `comparables` (séparateur `;`, UTF-8 BOM)
 - `sources.md` — ce registre (généré par `build.py`, comme la feuille `sources`)
 - `../README-sources.md` — README du pipeline, rédigé à la main, jamais écrit par `build.py`
 

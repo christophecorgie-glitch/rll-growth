@@ -3,8 +3,11 @@
 1. Test statique sur build.py : les colonnes RNA nominatives (dir_*, adrg_*, siteweb, observation) ne sont
    jamais lues — `RNA_USECOLS` ne les contient pas, la lecture du zip RNA passe par `usecols` limité à
    `RNA_USECOLS`, et aucun nom de ces colonnes n'apparaît dans le code exécutable (docstrings exclues).
-2. Test sur les sorties versionnées (out/*.xlsx, out/*.csv) : aucune colonne de personne physique, aucun
+2. Test sur les sorties versionnées (out/*.xlsx, out/*.csv, dont la vue comparables : feuilles comparables /
+   comparables_verticals et RLL-IDF-comparables-v0.1.csv) : aucune colonne de personne physique, aucun
    email ni numéro de téléphone dans les cellules.
+3. Même contrôle sur un build complet à partir des données fictives de conftest.py, dont le zip RNA contient
+   des colonnes nominatives fictives : leur contenu n'apparaît dans aucune sortie.
 
 Lancer : python3 -m pytest pipelines/fr-idf/tests
 """
@@ -16,6 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+
+from conftest import FAKE_PERSON
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
 OUT = PIPELINE_DIR / "out"
@@ -69,8 +74,14 @@ def test_no_personal_column_name_in_code():
     assert found == [], f"noms de colonnes nominatives présents dans le code : {found}"
 
 
-def _outputs():
-    files = sorted(OUT.glob("*.xlsx")) + sorted(OUT.glob("*.csv"))
+EXPECTED_OUTPUTS = {"RLL-IDF-villes-x-verticals-v0.1.csv", "RLL-IDF-comparables-v0.1.csv",
+                    "RLL-IDF-villes-x-verticals-v0.1.xlsx:comparables",
+                    "RLL-IDF-villes-x-verticals-v0.1.xlsx:comparables_verticals",
+                    "RLL-IDF-villes-x-verticals-v0.1.xlsx:villes_x_verticals"}
+
+
+def _outputs(out: Path = OUT):
+    files = sorted(out.glob("*.xlsx")) + sorted(out.glob("*.csv"))
     if not files:
         pytest.skip("aucune sortie dans out/")
     for f in files:
@@ -92,19 +103,46 @@ def _header_rows(df: pd.DataFrame) -> list[list[str]]:
     return rows
 
 
-def test_outputs_have_no_personal_columns():
+def _personal_headers(outputs) -> list[str]:
     bad = []
-    for name, df in _outputs():
+    for name, df in outputs:
         for header in _header_rows(df):
             bad += [f"{name}:{h}" for h in header if PERSONAL_HEADER.search(h)]
-    assert bad == [], f"colonnes de personne physique dans les sorties : {bad}"
+    return bad
 
 
-def test_outputs_have_no_email_or_phone():
+def _emails_phones(outputs) -> list[str]:
     bad = []
-    for name, df in _outputs():
+    for name, df in outputs:
         for col in df.columns:
             s = df[col].dropna().astype(str)
             hits = s[s.str.contains(EMAIL) | s.str.contains(PHONE)]
             bad += [f"{name}:{v[:60]}" for v in hits.head(3)]
+    return bad
+
+
+def test_versioned_outputs_include_new_views():
+    names = {name for name, _ in _outputs()}
+    assert EXPECTED_OUTPUTS <= names, f"sorties attendues absentes de out/ : {EXPECTED_OUTPUTS - names}"
+
+
+def test_outputs_have_no_personal_columns():
+    bad = _personal_headers(_outputs())
+    assert bad == [], f"colonnes de personne physique dans les sorties : {bad}"
+
+
+def test_outputs_have_no_email_or_phone():
+    bad = _emails_phones(_outputs())
     assert bad == [], f"email / téléphone dans les sorties : {bad}"
+
+
+def test_fake_build_outputs_have_no_personal_data(pipeline_copy, load_build):
+    build = load_build(pipeline_copy)
+    build.main([])
+    outputs = list(_outputs(pipeline_copy / "out"))
+    assert EXPECTED_OUTPUTS <= {name for name, _ in outputs}
+    assert _personal_headers(outputs) == []
+    assert _emails_phones(outputs) == []
+    leaked = [name for name, df in outputs
+              if df.astype(str).apply(lambda c: c.str.contains(FAKE_PERSON, regex=False)).any().any()]
+    assert leaked == [], f"donnée nominative fictive du RNA présente dans : {leaked}"
