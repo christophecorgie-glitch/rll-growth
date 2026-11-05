@@ -6,9 +6,9 @@ nombre de lignes brutes et conservées, notes, écarts de correspondance des com
 faits que la feuille `sources` du classeur, exigée par `CLAUDE.md`. Les chiffres d'une exécution (dates, nombres
 de lignes) se lisent dans `out/sources.md` et la feuille `sources`, pas ici. Le test
 `tests/test_writes_only_out.py` (pytest, sans réseau, données fictives) vérifie que le build n'écrit rien en
-dehors de `out/`.
+dehors de `out/`. Ces tests tournent aussi en CI (`.github/workflows/ci.yml`, sans réseau ni secret) à chaque PR.
 
-Reproduire (depuis la racine du dépôt) : `python3 pipelines/fr-idf/build.py`. Par défaut `--workdir` vaut
+Reproduire (depuis la racine du dépôt, commande unique du dépôt) : `python3 pipelines/fr-idf/build.py`. Par défaut `--workdir` vaut
 `pipelines/fr-idf/raw` et `--out` vaut `pipelines/fr-idf/out`, quel que soit le répertoire courant. Les données
 brutes vont dans `raw/` (ignoré par git), chacune avec un fichier `<nom>.source.json` (URL d'origine, date de
 téléchargement) : un fichier déjà présent dans `raw/` est relu tel quel, et la feuille `sources` indique alors
